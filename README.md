@@ -2,7 +2,7 @@
 
 Customers upload a photo of their kitchen, tap their cabinets, and see them in any Sherwin-Williams colour. Then they can ask for a quote in that colour with one tap.
 
-- **Top 10 cabinet colours** are shown first. On phones they sit right under the photo, so customers can try a colour with one tap.
+- **20 popular cabinet colours** are shown first. On phones they sit right under the photo, so customers can try a colour with one tap.
 - **All 1,526 Sherwin-Williams colours** can be found by name or number (for example "Naval" or "6244").
 - **Tap to select.** Tapping a cabinet door selects the whole door. The **Brush** and **Erase** tools fix anything the tap missed or caught by mistake. **Undo** is available.
 - **Realistic result.** The room's light and shadows stay, handles and countertops don't change, and most of the wood grain is hidden like real paint would.
@@ -57,15 +57,21 @@ quoteUrl: "",                   // OR your existing quote page
 
 **Shortcut:** `brand`, `accent`, `defaultColor` and `quoteUrl` can also be set in the embed link instead of the file, for example `index.html?brand=Acme%20Painting&accent=%23224466`.
 
-## Changing the top 10
+## Changing the popular colours
 
-In `colors.js`, the first line after the comment lists the top 10 by Sherwin-Williams number:
+In `colors.js`, the first line after the comment lists the 20 popular colours by Sherwin-Williams number:
 
 ```js
-window.SW_POPULAR=[["Top 10 cabinet colours",["7005","7006","7008","7004","7029","7015","6204","6244","7069","7048"]]];
+window.SW_POPULAR=[["Popular cabinet colours",["7005","7006","7008", ...]]];
 ```
 
-Replace or reorder the numbers, keeping the quotes. They show in that order. The current picks are Pure White, Extra White, Alabaster, Snowbound, Agreeable Gray, Repose Gray, Sea Salt, Naval, Iron Ore and Urbane Bronze. That list is a general starting point, not based on sales data. Swap in your best sellers.
+Replace, add or reorder the numbers, keeping the quotes. They show in that order. The current picks, in order:
+- **Whites:** Pure White, Extra White, Alabaster, Snowbound, Greek Villa, Dover White, Shoji White
+- **Greige:** Agreeable Gray, Repose Gray, Accessible Beige, Mindful Gray
+- **Greens:** Sea Salt, Evergreen Fog, Pewter Green
+- **Darks:** Naval, Iron Ore, Urbane Bronze, Tricorn Black, Peppercorn, Cyberspace
+
+That list is a general starting point, not based on sales data. Swap in your best sellers. After changing `colors.js`, bump the number in `colors.js?v=3` in `index.html` so browsers fetch the new list.
 
 ## Good to know
 
