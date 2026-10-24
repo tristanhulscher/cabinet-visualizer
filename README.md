@@ -18,19 +18,18 @@ Customers upload a photo of their kitchen, tap their cabinets, and see them in a
 
 Both files must be hosted together, in the same folder.
 
-## 1. Host it
+## 1. Where it lives
 
-Put both files anywhere that can serve a web page, for example:
-- your own website, in a folder like `yoursite.com/cabinet-visualizer/`
-- Netlify Drop (drag the folder onto app.netlify.com/drop, free)
-- GitHub Pages
+**Live link: https://tristanhulscher.github.io/cabinet-visualizer/**
+
+It's hosted free on GitHub Pages from this repo. Any change pushed to `main` goes live within about a minute, and the link stays the same. If you later move the tool to your own website, only the `src` in the embed code changes.
 
 ## 2. Put it on the landing page
 
-Paste this into a "Custom HTML" / "Code" / "Embed" block. That works in HighLevel funnels, WordPress, Wix and Squarespace. Change the `src` to wherever you hosted it:
+Paste this into a "Custom HTML" / "Code" / "Embed" block. That works in HighLevel funnels, WordPress, Wix and Squarespace:
 
 ```html
-<iframe id="cabinet-visualizer" src="https://YOUR-HOST/cabinet-visualizer/index.html"
+<iframe id="cabinet-visualizer" src="https://tristanhulscher.github.io/cabinet-visualizer/"
         style="width:100%;height:1100px;border:0" allow="camera" title="Cabinet colour visualizer"></iframe>
 <script>
   // Grows the frame to fit the tool, so there's no inner scrollbar
