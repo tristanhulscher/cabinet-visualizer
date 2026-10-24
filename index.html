@@ -677,8 +677,10 @@ $("quoteForm").addEventListener("submit", async ev => {
 
 /* ---------- embedding: tell the parent page our height ---------- */
 if (parent !== window && "ResizeObserver" in window) {
-  new ResizeObserver(() => parent.postMessage({ type: "cabinet-visualizer:height", height: document.documentElement.scrollHeight }, "*"))
-    .observe(document.body);
+  // Measure the content, not the document (which is never shorter than the iframe itself)
+  const app = $("app");
+  new ResizeObserver(() => parent.postMessage({ type: "cabinet-visualizer:height", height: Math.ceil(app.getBoundingClientRect().height) }, "*"))
+    .observe(app);
 }
 
 buildPopular();
