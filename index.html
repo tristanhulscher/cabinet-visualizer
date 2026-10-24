@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cabinet Colour Visualizer</title>
+<style>
+  :root {
+    --accent: #1f4e5f;
+    --accent-ink: #ffffff;
+    --bg: #ffffff;
+    --panel: #f6f5f2;
+    --ink: #1d1d1b;
+    --muted: #6b6a66;
+    --line: #e2e0da;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  button, input, textarea { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+  .app { max-width: 1180px; margin: 0 auto; padding: 20px 16px 28px; }
+  header h1 { font-size: clamp(22px, 4vw, 30px); line-height: 1.15; margin: 0 0 6px; }
+  header p { margin: 0 0 18px; color: var(--muted); }
+
+  /* Upload */
+  .drop {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    min-height: 300px; padding: 28px 16px; text-align: center; cursor: pointer;
+    border: 2px dashed var(--line); border-radius: var(--radius); background: var(--panel);
+    transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); }
+  .drop svg { width: 46px; height: 46px; color: var(--accent); }
+  .drop strong { font-size: 18px; }
+  .drop .sub { color: var(--muted); font-size: 14px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 10px 16px; border-radius: 999px; border: 1px solid var(--line);
+    background: #fff; cursor: pointer; font-weight: 600; white-space: nowrap; text-decoration: none;
+  }
+  .btn:hover { border-color: var(--ink); }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.big { padding: 14px 22px; font-size: 16px; }
+  .tips { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 14px; }
+  .tips div { font-size: 14px; color: var(--muted); padding-left: 26px; position: relative; }
+  .tips b { position: absolute; left: 0; top: 0; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 12px; display: grid; place-items: center; }
+
+  /* Editor */
+  .editor { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+  .editor > * { min-width: 0; }
+  .stage {
+    position: relative; border-radius: var(--radius); overflow: hidden; background: #ddd;
+    user-select: none; -webkit-user-select: none; line-height: 0;
+  }
+  .stage canvas { display: block; width: 100%; height: auto; }
+  .stage #after { position: absolute; inset: 0; }
+  .stage.tool-wand { cursor: crosshair; touch-action: manipulation; }
+  .stage.tool-brush, .stage.tool-erase, .stage.comparing { cursor: none; touch-action: none; }
+  .stage.comparing { cursor: ew-resize; }
+  .cursor {
+    position: absolute; pointer-events: none; border: 2px solid #fff; border-radius: 50%;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.5); transform: translate(-50%, -50%);
+  }
+  .divider { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; }
+  .divider::before { content: ""; position: absolute; top: 0; bottom: 0; left: -1.5px; width: 3px; background: #fff; box-shadow: 0 0 6px rgba(0,0,0,.35); }
+  .divider span {
+    position: absolute; top: 50%; left: 0; transform: translate(-50%, -50%);
+    width: 40px; height: 40px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    display: grid; place-items: center; font-size: 16px; line-height: 1; color: var(--ink);
+  }
+  .tag {
+    position: absolute; top: 10px; padding: 3px 9px; border-radius: 999px; line-height: 1.4;
+    background: rgba(0,0,0,.6); color: #fff; font-size: 12px; font-weight: 600; pointer-events: none;
+  }
+  .busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(255,255,255,.4); pointer-events: none; line-height: 1.4; }
+
+  .hint {
+    margin: 12px 0 0; padding: 10px 14px; border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 9%, #fff); border: 1px solid color-mix(in srgb, var(--accent) 25%, #fff);
+    font-size: 14px;
+  }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; background: var(--panel); }
+  .seg button { border: 0; background: none; padding: 7px 12px; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: 14px; }
+  .seg button[aria-pressed="true"] { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.15); color: var(--accent); }
+  .toolbar .btn { padding: 8px 13px; font-size: 14px; }
+  .btn[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .slider { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .slider input { width: 110px; accent-color: var(--accent); }
+  .spacer { flex: 1; }
+
+  /* Palette */
+  .palette { background: var(--panel); border-radius: var(--radius); padding: 16px; position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
+  .current { display: flex; gap: 12px; align-items: center; padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+  .current .chip { width: 56px; height: 56px; border-radius: 10px; border: 1px solid rgba(0,0,0,.12); flex: none; }
+  .current small { color: var(--muted); display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .current strong { font-size: 17px; display: block; }
+  .palette h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 8px; }
+  .palette h3:first-of-type { margin-top: 4px; }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); gap: 8px; }
+  .sw { border: 0; background: none; padding: 0; cursor: pointer; text-align: left; min-width: 0; }
+  .sw i {
+    display: block; aspect-ratio: 1; border-radius: 10px; border: 1px solid rgba(0,0,0,.12);
+    transition: transform .12s; position: relative;
+  }
+  .sw:hover i { transform: scale(1.05); }
+  .sw[aria-pressed="true"] i { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .sw[aria-pressed="true"] i::after { content: "✓"; position: absolute; inset: 0; display: grid; place-items: center; font-style: normal; font-weight: 700; font-size: 20px; color: var(--check, #fff); }
+  .sw span { display: block; font-size: 12px; line-height: 1.2; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sw em { display: block; font-size: 11px; font-style: normal; color: var(--muted); }
+  .search { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+  .search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .more-note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+  .quick { display: none; }
+  .actions { display: grid; gap: 8px; margin-top: 16px; }
+  .actions .btn { width: 100%; }
+
+  footer { margin-top: 22px; font-size: 12px; color: var(--muted); }
+  footer p { margin: 4px 0; }
+
+  /* Quote dialog */
+  dialog { border: 0; border-radius: 16px; padding: 0; width: min(460px, calc(100vw - 32px)); box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .dlg { padding: 22px; }
+  .dlg h2 { margin: 0 0 4px; font-size: 21px; }
+  .dlg p { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+  .dlg .picked { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--panel); margin-bottom: 14px; font-weight: 600; }
+  .dlg .picked i { width: 28px; height: 28px; border-radius: 6px; border: 1px solid rgba(0,0,0,.12); }
+  .field { display: grid; gap: 4px; margin-bottom: 10px; font-size: 13px; font-weight: 600; }
+  .field input, .field textarea { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-weight: 400; width: 100%; }
+  .field textarea { min-height: 70px; resize: vertical; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .check { display: flex; gap: 8px; align-items: center; font-size: 13px; margin: 4px 0 14px; }
+  .dlg-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .done { text-align: center; padding: 10px 0; }
+
+  @media (max-width: 860px) {
+    .editor { grid-template-columns: minmax(0, 1fr); }
+    .palette { position: static; max-height: none; }
+    /* Popular rows scroll sideways on phones so every colour is one swipe away */
+    .swatches.popular { display: flex; overflow-x: auto; gap: 10px; padding-bottom: 6px; scroll-snap-type: x proximity; }
+    .swatches.popular .sw { flex: 0 0 72px; scroll-snap-align: start; }
+    .slider input { width: 90px; }
+    /* Popular colours right under the photo, so changing colour never means scrolling away from it */
+    .quick { display: flex; gap: 8px; overflow-x: auto; margin-top: 10px; padding: 2px 2px 6px; scroll-snap-type: x proximity; }
+    .quick .sw { flex: 0 0 62px; scroll-snap-align: start; }
+    .quick .sw em { display: none; }
+  }
+  @media (max-width: 480px) { .row2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <header>
+    <h1 id="title">See your cabinets in a new colour</h1>
+    <p>Upload a photo of your kitchen, tap your cabinets, and try any Sherwin-Williams colour in seconds.</p>
+  </header>
+
+  <!-- Step 1: upload -->
+  <section id="start">
+    <label class="drop" id="drop">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h3l2-3h6l2 3h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="4"/></svg>
+      <strong>Upload or take a photo of your cabinets</strong>
+      <span class="sub">Tap here, or drag a photo onto this box</span>
+      <span class="btn primary big">Choose photo</span>
+      <input type="file" id="file" accept="image/*" hidden>
+    </label>
+    <div class="tips">
+      <div><b>1</b>Stand back and shoot straight on, with the lights on.</div>
+      <div><b>2</b>Tap each cabinet door and drawer to select it.</div>
+      <div><b>3</b>Tap a colour to see it instantly. Compare before and after.</div>
+    </div>
+  </section>
+
+  <!-- Step 2: editor -->
+  <section id="editor" class="editor" hidden>
+    <div>
+      <div class="stage tool-wand" id="stage">
+        <canvas id="before"></canvas>
+        <canvas id="after"></canvas>
+        <div class="cursor" id="cursor" hidden></div>
+        <div class="divider" id="divider" hidden><span>⇔</span></div>
+        <div class="tag" id="tagBefore" style="left:10px" hidden>Before</div>
+        <div class="tag" id="tagAfter" style="right:10px" hidden>After</div>
+      </div>
+      <div class="quick" id="quick" aria-label="Popular cabinet colours"></div>
+      <div class="hint" id="hint"></div>
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="Selection tool">
+          <button data-tool="wand" aria-pressed="true" title="Tap a cabinet to select it">👆 Tap</button>
+          <button data-tool="brush" aria-pressed="false" title="Paint over areas the tap missed">🖌 Brush</button>
+          <button data-tool="erase" aria-pressed="false" title="Remove areas that shouldn't be painted">⌫ Erase</button>
+        </div>
+        <label class="slider" id="tolWrap" title="How far a tap spreads">Spread <input type="range" id="tol" min="4" max="45" value="16"></label>
+        <label class="slider" id="sizeWrap" hidden>Size <input type="range" id="size" min="4" max="80" value="24"></label>
+        <span class="spacer"></span>
+        <button class="btn" id="undo" disabled>↶ Undo</button>
+        <button class="btn" id="compare" aria-pressed="false">Before / After</button>
+        <button class="btn" id="showSel" aria-pressed="false" title="Highlight what's selected">Show selection</button>
+        <button class="btn" id="restart">New photo</button>
+      </div>
+    </div>
+
+    <aside class="palette" aria-label="Sherwin-Williams colours">
+      <div class="current">
+        <span class="chip" id="curChip"></span>
+        <div><small>Your colour</small><strong id="curName"></strong><span id="curNum" style="color:var(--muted);font-size:13px"></span></div>
+      </div>
+      <div id="popular"></div>
+      <h3>Find any Sherwin-Williams colour</h3>
+      <input class="search" id="search" type="search" placeholder="Name or number, e.g. Naval or 6244" autocomplete="off">
+      <div class="swatches" id="results" style="margin-top:10px"></div>
+      <p class="more-note" id="resultsNote"></p>
+      <div class="actions">
+        <button class="btn primary big" id="quoteBtn">Get a free quote in this colour</button>
+        <button class="btn" id="download">Download my photo</button>
+      </div>
+    </aside>
+  </section>
+
+  <footer>
+    <p>Colours on screen are a preview only and vary by device and lighting. Always check a physical paint chip before you decide.</p>
+    <p>Sherwin-Williams colour names and numbers are trademarks of The Sherwin-Williams Company. <span id="brandFoot"></span></p>
+  </footer>
+</div>
+
+<dialog id="quote">
+  <form class="dlg" id="quoteForm" method="dialog">
+    <div id="quoteFields">
+      <h2>Get your free cabinet quote</h2>
+      <p>We'll get back to you within one business day.</p>
+      <div class="picked"><i id="qChip"></i><span id="qColor"></span></div>
+      <div class="row2">
+        <label class="field">Name<input name="name" required autocomplete="name"></label>
+        <label class="field">Phone<input name="phone" type="tel" required autocomplete="tel"></label>
+      </div>
+      <label class="field">Email<input name="email" type="email" required autocomplete="email"></label>
+      <label class="field">City / area<input name="city" autocomplete="address-level2"></label>
+      <label class="field">Anything we should know? (optional)<textarea name="notes" placeholder="e.g. number of doors, island too, timing"></textarea></label>
+      <label class="check"><input type="checkbox" name="attach" checked> Include my preview photo</label>
+      <div class="dlg-actions">
+        <button class="btn" value="cancel" formnovalidate>Cancel</button>
+        <button class="btn primary" id="sendQuote" value="send">Send request</button>
+      </div>
+    </div>
+    <div class="done" id="quoteDone" hidden>
+      <h2>Thanks! 🎉</h2>
+      <p>Your request is in. We'll be in touch soon.</p>
+      <button class="btn primary" value="cancel">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="colors.js?v=2"></script>
+<script>
+/* ===================== Settings: edit these ===================== */
+const CONFIG = {
+  brand: "Envision Painting",          // shown in the footer and on downloaded photos
+  accent: "#1f4e5f",                   // button / highlight colour
+  defaultColor: "7006",                // colour selected when a photo is loaded (SW number)
+  // Where quote requests go. Fill in ONE of these:
+  quoteWebhook: "",                    // e.g. a HighLevel or Zapier "inbound webhook" URL (form fields are POSTed to it)
+  quoteUrl: "",                        // OR a link to your existing quote page (colour is added as ?color=...)
+  watermark: true,                     // brand name in the corner of downloaded photos
+  maxSize: 1400                        // longest side photos are scaled to (pixels)
+};
+/* =============================================================== */
+
+// URL overrides let the same file be reused: index.html?brand=...&accent=%23123456&quoteUrl=...
+(() => {
+  const q = new URLSearchParams(location.search);
+  for (const k of ["brand", "accent", "defaultColor", "quoteUrl"]) if (q.get(k)) CONFIG[k] = q.get(k);
+})();
+document.documentElement.style.setProperty("--accent", CONFIG.accent);
+document.getElementById("brandFoot").textContent = CONFIG.brand ? `Visualizer by ${CONFIG.brand}.` : "";
+
+const $ = id => document.getElementById(id);
+const COLORS = window.SW_COLORS.map(([num, name, hex]) => ({ num, name, hex: "#" + hex }));
+const BY_NUM = Object.fromEntries(COLORS.map(c => [c.num, c]));
+
+/* ---------- colour math (sRGB D65 <-> CIE Lab) ---------- */
+const LIN = new Float32Array(256);
+for (let i = 0; i < 256; i++) { const c = i / 255; LIN[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+const gamma = v => { v = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055; return v < 0 ? 0 : v > 1 ? 255 : Math.round(v * 255); };
+const fLab = t => t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+const fInv = t => t > 0.206893 ? t * t * t : (t - 16 / 116) / 7.787;
+function rgbToLab(r, g, b) {
+  const R = LIN[r], G = LIN[g], B = LIN[b];
+  const x = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047;
+  const y = R * 0.2126 + G * 0.7152 + B * 0.0722;
+  const z = (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883;
+  const fy = fLab(y);
+  return [116 * fy - 16, 500 * (fLab(x) - fy), 200 * (fy - fLab(z))];
+}
+function labToRgb(L, a, b) {
+  const fy = (L + 16) / 116, x = fInv(fy + a / 500) * 0.95047, y = fInv(fy), z = fInv(fy - b / 200) * 1.08883;
+  return [
+    gamma(x * 3.2406 + y * -1.5372 + z * -0.4986),
+    gamma(x * -0.9689 + y * 1.8758 + z * 0.0415),
+    gamma(x * 0.0557 + y * -0.2040 + z * 1.0570)
+  ];
+}
+const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+
+// Separable box blur on a Float32Array image
+function boxBlur(src, w, h, r) {
+  if (r < 1) return src.slice();
+  const tmp = new Float32Array(w * h), out = new Float32Array(w * h), n = 2 * r + 1;
+  for (let y = 0; y < h; y++) {
+    const o = y * w; let s = 0;
+    for (let x = -r; x <= r; x++) s += src[o + Math.min(w - 1, Math.max(0, x))];
+    for (let x = 0; x < w; x++) {
+      tmp[o + x] = s / n;
+      s += src[o + Math.min(w - 1, x + r + 1)] - src[o + Math.max(0, x - r)];
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let s = 0;
+    for (let y = -r; y <= r; y++) s += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = s / n;
+      s += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x];
+    }
+  }
+  return out;
+}
+
+/* ---------- state ---------- */
+const S = {
+  w: 0, h: 0, orig: null,          // original pixels
+  Lb: null, Ab: null, Bb: null,     // lightly blurred Lab (for tap selection)
+  Y: null, Yb: null,                // luminance and smoothed luminance (for shading)
+  mask: null, alpha: null,          // hard selection 0/1 and feathered edge 0..1
+  yMean: 0.2,
+  color: null, tool: "wand",
+  history: [], comparing: false, split: 0.5, showSel: false
+};
+const before = $("before"), after = $("after"), stage = $("stage");
+const bctx = before.getContext("2d"), actx = after.getContext("2d", { willReadFrequently: true });
+let outImg = null;
+
+/* ---------- loading a photo ---------- */
+const fileInput = $("file"), drop = $("drop");
+fileInput.addEventListener("change", () => fileInput.files[0] && loadFile(fileInput.files[0]));
+["dragenter", "dragover"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", ev => { const f = ev.dataTransfer.files[0]; if (f) loadFile(f); });
+
+function loadFile(file) {
+  if (!file.type.startsWith("image/")) { alert("Please choose a photo (JPG or PNG)."); return; }
+  const url = URL.createObjectURL(file), img = new Image();
+  img.onload = () => { URL.revokeObjectURL(url); setup(img); };
+  img.onerror = () => { URL.revokeObjectURL(url); alert("Sorry, that photo couldn't be opened. Try a JPG or PNG."); };
+  img.src = url;
+}
+
+function setup(img) {
+  const k = Math.min(1, CONFIG.maxSize / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.round(img.naturalWidth * k), h = Math.round(img.naturalHeight * k);
+  for (const c of [before, after]) { c.width = w; c.height = h; }
+  bctx.drawImage(img, 0, 0, w, h);
+  const data = bctx.getImageData(0, 0, w, h).data;
+  const n = w * h, L = new Float32Array(n), A = new Float32Array(n), B = new Float32Array(n), Y = new Float32Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const lab = rgbToLab(data[p], data[p + 1], data[p + 2]);
+    L[i] = lab[0]; A[i] = lab[1]; B[i] = lab[2];
+    Y[i] = LIN[data[p]] * 0.2126 + LIN[data[p + 1]] * 0.7152 + LIN[data[p + 2]] * 0.0722;
+  }
+  const r1 = Math.max(1, Math.round(Math.max(w, h) / 700)); // de-noise for selection
+  const r2 = Math.max(2, Math.round(Math.max(w, h) / 260)); // smooth out wood grain for shading
+  Object.assign(S, {
+    w, h, orig: data, Lb: boxBlur(L, w, h, r1), Ab: boxBlur(A, w, h, r1), Bb: boxBlur(B, w, h, r1),
+    Y, Yb: boxBlur(Y, w, h, r2), mask: new Uint8Array(n), alpha: new Float32Array(n), history: []
+  });
+  outImg = new ImageData(new Uint8ClampedArray(data), w, h);
+  $("start").hidden = true; $("editor").hidden = false;
+  if (!S.color) pickColor(BY_NUM[CONFIG.defaultColor] || COLORS[0]);
+  setCompare(false); setTool("wand"); updateUndo(); maskChanged();
+  stage.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+$("restart").onclick = () => { fileInput.value = ""; $("editor").hidden = true; $("start").hidden = false; fileInput.click(); };
+
+/* ---------- selection ---------- */
+function pushHistory() { S.history.push(S.mask.slice()); if (S.history.length > 25) S.history.shift(); updateUndo(); }
+function updateUndo() { $("undo").disabled = !S.history.length; }
+$("undo").onclick = () => { if (!S.history.length) return; S.mask = S.history.pop(); updateUndo(); maskChanged(); };
+
+// Tap: flood-fill similar colour, then close small gaps (wood knots, grain) inside the area
+function wand(x, y) {
+  const { w, h, Lb, Ab, Bb } = S, tol = +$("tol").value, n = w * h;
+  let sL = 0, sA = 0, sB = 0, cnt = 0;
+  for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+    const xx = Math.min(w - 1, Math.max(0, x + dx)), yy = Math.min(h - 1, Math.max(0, y + dy)), i = yy * w + xx;
+    sL += Lb[i]; sA += Ab[i]; sB += Bb[i]; cnt++;
+  }
+  sL /= cnt; sA /= cnt; sB /= cnt;
+  const tol2 = tol * tol, region = new Uint8Array(n), stack = new Int32Array(n);
+  let sp = 0, area = 0;
+  stack[sp++] = y * w + x; region[y * w + x] = 1;
+  while (sp) {
+    const i = stack[--sp], px = i % w; area++;
+    const nb = [px > 0 ? i - 1 : -1, px < w - 1 ? i + 1 : -1, i - w, i + w];
+    for (const j of nb) {
+      if (j < 0 || j >= n || region[j]) continue;
+      // Lightness counts less than hue so shadows and highlights stay in
+      const dL = (Lb[j] - sL) * 0.55, dA = Ab[j] - sA, dB = Bb[j] - sB;
+      if (dL * dL + dA * dA + dB * dB <= tol2) { region[j] = 1; stack[sp++] = j; }
+    }
+  }
+  if (area > n * 0.85) { hint("That tap spread over almost the whole photo. Try lowering <b>Spread</b> and tap again.", true); return; }
+  const r = Math.max(2, Math.round(Math.max(w, h) / 350));
+  let f = Float32Array.from(region);
+  f = boxBlur(f, w, h, r); for (let i = 0; i < n; i++) f[i] = f[i] > 0.001 ? 1 : 0; // dilate
+  f = boxBlur(f, w, h, r); // erode
+  pushHistory();
+  for (let i = 0; i < n; i++) if (f[i] > 0.999) S.mask[i] = 1;
+  maskChanged();
+}
+
+function stamp(x, y, val) {
+  const { w, h, mask } = S, r = brushRadius();
+  for (let yy = Math.max(0, Math.floor(y - r)); yy <= Math.min(h - 1, Math.ceil(y + r)); yy++)
+    for (let xx = Math.max(0, Math.floor(x - r)); xx <= Math.min(w - 1, Math.ceil(x + r)); xx++)
+      if ((xx - x) ** 2 + (yy - y) ** 2 <= r * r) mask[yy * w + xx] = val;
+}
+const brushRadius = () => (+$("size").value / 1000) * Math.max(S.w, S.h);
+
+function maskChanged() {
+  const { w, h, mask, Yb } = S, n = w * h;
+  S.alpha = boxBlur(Float32Array.from(mask), w, h, 1);
+  let sum = 0, cnt = 0;
+  for (let i = 0; i < n; i++) if (mask[i]) { sum += Yb[i]; cnt++; }
+  S.yMean = cnt ? sum / cnt : 0.2;
+  S.selected = cnt;
+  render();
+  updateHint();
+}
+
+/* ---------- painting ---------- */
+let lut = null; // lightness (0..1000) -> rgb for the current colour
+function buildLut() {
+  const [, a, b] = rgbToLab(...hexRgb(S.color.hex));
+  lut = new Uint8Array(1001 * 3);
+  for (let i = 0; i <= 1000; i++) { const c = labToRgb(i / 10, a, b); lut.set(c, i * 3); }
+  const t = rgbToLab(...hexRgb(S.color.hex));
+  S.tL = t[0];
+  S.tY = fInv((t[0] + 16) / 116);
+}
+
+let raf = 0;
+function render() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); }
+function draw() {
+  if (!outImg || !S.color) return;
+  const { orig, alpha, Y, Yb, yMean, tY, w, h } = S, out = outImg.data, n = w * h;
+  out.set(orig);
+  for (let i = 0; i < n; i++) {
+    const al = alpha[i];
+    if (al <= 0) continue;
+    // Keep the room's light and shadow, mostly drop the wood grain, apply the paint colour
+    const shade = Math.pow(Math.min(2.5, Math.max(0.1, Yb[i] / yMean)), 0.8);
+    const grain = Math.pow(Math.max(0.2, Math.min(3, Y[i] / Math.max(1e-4, Yb[i]))), 0.15);
+    let yN = tY * shade * grain;
+    // Roll off highlights softly so light colours don't blow out to flat white
+    if (yN > tY) { const room = Math.max(0.04, (1 - tY) * 0.9); yN = tY + room * (1 - Math.exp(-(yN - tY) / room)); }
+    const L = yN > 0.008856 ? 116 * Math.cbrt(yN) - 16 : 903.3 * yN;
+    const k = Math.round(Math.max(0, Math.min(100, L)) * 10) * 3, p = i * 4;
+    let r = lut[k], g = lut[k + 1], b = lut[k + 2];
+    if (S.showSel) { r = r * 0.55 + 255 * 0.45; g = g * 0.55 + 60 * 0.45; b = b * 0.55 + 140 * 0.45; }
+    out[p] = orig[p] + (r - orig[p]) * al;
+    out[p + 1] = orig[p + 1] + (g - orig[p + 1]) * al;
+    out[p + 2] = orig[p + 2] + (b - orig[p + 2]) * al;
+  }
+  actx.putImageData(outImg, 0, 0);
+}
+
+/* ---------- pointer handling ---------- */
+function toImage(ev) {
+  const r = stage.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) * S.w / r.width, y: (ev.clientY - r.top) * S.h / r.height, rx: ev.clientX - r.left, ry: ev.clientY - r.top, rw: r.width };
+}
+let drag = null;
+stage.addEventListener("pointerdown", ev => {
+  if (ev.button > 0) return;
+  const p = toImage(ev);
+  if (S.comparing) { drag = { mode: "split" }; setSplit(p.rx / p.rw); stage.setPointerCapture(ev.pointerId); return; }
+  if (S.tool === "wand") { drag = { mode: "tap", x: ev.clientX, y: ev.clientY }; return; }
+  pushHistory();
+  drag = { mode: "paint", last: p };
+  stamp(p.x, p.y, S.tool === "brush" ? 1 : 0); quickPaint();
+  stage.setPointerCapture(ev.pointerId);
+});
+stage.addEventListener("pointermove", ev => {
+  const p = toImage(ev);
+  moveCursor(p, ev.pointerType);
+  if (!drag) return;
+  if (drag.mode === "split") return setSplit(p.rx / p.rw);
+  if (drag.mode === "paint") {
+    const dx = p.x - drag.last.x, dy = p.y - drag.last.y, steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / (brushRadius() * 0.4)));
+    for (let s = 1; s <= steps; s++) stamp(drag.last.x + dx * s / steps, drag.last.y + dy * s / steps, S.tool === "brush" ? 1 : 0);
+    drag.last = p; quickPaint();
+  }
+});
+const endDrag = ev => {
+  if (!drag) return;
+  if (drag.mode === "tap" && ev.type === "pointerup" && Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) < 10) {
+    const p = toImage(ev);
+    wand(Math.min(S.w - 1, Math.max(0, Math.floor(p.x))), Math.min(S.h - 1, Math.max(0, Math.floor(p.y))));
+  }
+  if (drag.mode === "paint") maskChanged();
+  drag = null;
+};
+stage.addEventListener("pointerup", endDrag);
+stage.addEventListener("pointercancel", endDrag);
+stage.addEventListener("pointerleave", () => { $("cursor").hidden = true; });
+
+// During a brush stroke, refresh only the feathering + picture (stats update when the stroke ends)
+function quickPaint() { S.alpha = Float32Array.from(S.mask); render(); }
+
+function moveCursor(p, type) {
+  const c = $("cursor");
+  if (S.comparing || S.tool === "wand" || type === "touch") { c.hidden = true; return; }
+  const d = brushRadius() * 2 * p.rw / S.w;
+  Object.assign(c.style, { left: p.rx + "px", top: p.ry + "px", width: d + "px", height: d + "px" });
+  c.hidden = false;
+}
+
+/* ---------- tools & toggles ---------- */
+document.querySelectorAll("[data-tool]").forEach(b => b.onclick = () => setTool(b.dataset.tool));
+function setTool(t) {
+  S.tool = t;
+  document.querySelectorAll("[data-tool]").forEach(b => b.setAttribute("aria-pressed", b.dataset.tool === t));
+  $("tolWrap").hidden = t !== "wand"; $("sizeWrap").hidden = t === "wand";
+  if (S.comparing) setCompare(false);
+  stage.className = "stage tool-" + t;
+  updateHint();
+}
+$("compare").onclick = () => setCompare(!S.comparing);
+function setCompare(on) {
+  S.comparing = on;
+  $("compare").setAttribute("aria-pressed", on);
+  stage.className = "stage " + (on ? "comparing" : "tool-" + S.tool);
+  ["divider", "tagBefore", "tagAfter"].forEach(id => $(id).hidden = !on);
+  setSplit(on ? 0.5 : 0);
+  updateHint();
+}
+function setSplit(f) {
+  S.split = Math.min(1, Math.max(0, f));
+  after.style.clipPath = S.comparing ? `inset(0 0 0 ${S.split * 100}%)` : "none";
+  $("divider").style.left = S.split * 100 + "%";
+}
+$("showSel").onclick = () => { S.showSel = !S.showSel; $("showSel").setAttribute("aria-pressed", S.showSel); render(); };
+
+function hint(html, warn) { const el = $("hint"); el.innerHTML = html; el.style.borderColor = warn ? "#d9822b" : ""; }
+function updateHint() {
+  if (S.comparing) return hint("Drag across the photo to compare <b>before</b> and <b>after</b>.");
+  if (S.tool === "brush") return hint("Paint over any cabinet areas the tap missed.");
+  if (S.tool === "erase") return hint("Paint over countertops, handles or walls that shouldn't change.");
+  if (!S.selected) return hint("👆 <b>Tap a cabinet door</b> to paint it. Then tap each of the others.");
+  hint("Keep tapping doors and drawers to add them. Spilled onto the wall? <b>Undo</b>, lower <b>Spread</b>, or use <b>Erase</b>.");
+}
+
+/* ---------- colour picker ---------- */
+function swatch(c) {
+  const b = document.createElement("button");
+  b.className = "sw"; b.type = "button"; b.dataset.num = c.num;
+  b.title = `SW ${c.num} ${c.name}`;
+  b.setAttribute("aria-pressed", S.color && S.color.num === c.num);
+  const i = document.createElement("i"); i.style.background = c.hex;
+  i.style.setProperty("--check", rgbToLab(...hexRgb(c.hex))[0] > 60 ? "#1d1d1b" : "#fff");
+  const s = document.createElement("span"); s.textContent = c.name;
+  const e = document.createElement("em"); e.textContent = "SW " + c.num;
+  b.append(i, s, e);
+  b.onclick = () => pickColor(c);
+  return b;
+}
+function buildPopular() {
+  const box = $("popular");
+  for (const [group, nums] of window.SW_POPULAR) {
+    const h = document.createElement("h3"); h.textContent = group;
+    const g = document.createElement("div"); g.className = "swatches popular";
+    nums.forEach(n => { if (BY_NUM[n]) { g.append(swatch(BY_NUM[n])); $("quick").append(swatch(BY_NUM[n])); } });
+    box.append(h, g);
+  }
+}
+function pickColor(c) {
+  S.color = c;
+  document.querySelectorAll(".sw").forEach(b => b.setAttribute("aria-pressed", b.dataset.num === c.num));
+  $("curChip").style.background = c.hex; $("curName").textContent = c.name; $("curNum").textContent = "SW " + c.num;
+  buildLut(); render();
+}
+$("search").addEventListener("input", () => {
+  const q = $("search").value.trim().toLowerCase().replace(/^sw\s*/, ""), box = $("results");
+  box.textContent = ""; $("resultsNote").textContent = "";
+  if (!q) return;
+  const hits = COLORS.filter(c => c.num.startsWith(q) || c.name.toLowerCase().includes(q));
+  hits.slice(0, 48).forEach(c => box.append(swatch(c)));
+  $("resultsNote").textContent = !hits.length ? "No colours match that. Try another name or number."
+    : hits.length > 48 ? `Showing 48 of ${hits.length}. Type more to narrow it down.` : "";
+});
+
+/* ---------- download ---------- */
+function finalCanvas() {
+  const c = document.createElement("canvas"); c.width = S.w; c.height = S.h;
+  const x = c.getContext("2d");
+  const keep = S.showSel; S.showSel = false; draw(); S.showSel = keep;
+  x.drawImage(after, 0, 0);
+  if (keep) render();
+  const fs = Math.max(14, Math.round(S.w / 45)), pad = Math.round(fs * 0.6);
+  const label = `SW ${S.color.num} ${S.color.name}` + (CONFIG.watermark && CONFIG.brand ? `  ·  ${CONFIG.brand}` : "");
+  x.font = `600 ${fs}px -apple-system, Segoe UI, Roboto, sans-serif`;
+  const tw = x.measureText(label).width;
+  x.fillStyle = "rgba(0,0,0,.55)";
+  x.fillRect(S.w - tw - pad * 3, S.h - fs - pad * 3, tw + pad * 2, fs + pad * 2);
+  x.fillStyle = "#fff"; x.textBaseline = "top";
+  x.fillText(label, S.w - tw - pad * 2, S.h - fs - pad * 2);
+  return c;
+}
+$("download").onclick = () => {
+  finalCanvas().toBlob(b => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b);
+    a.download = `my-cabinets-SW-${S.color.num}-${S.color.name.replace(/\W+/g, "-")}.jpg`;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }, "image/jpeg", 0.9);
+};
+
+/* ---------- quote request ---------- */
+const dlg = $("quote");
+$("quoteBtn").onclick = () => {
+  const label = `SW ${S.color.num} ${S.color.name}`;
+  if (!CONFIG.quoteWebhook && CONFIG.quoteUrl) {
+    const u = new URL(CONFIG.quoteUrl, location.href); u.searchParams.set("color", label);
+    window.open(u.href, "_top"); return;
+  }
+  $("qChip").style.background = S.color.hex; $("qColor").textContent = label;
+  $("quoteFields").hidden = false; $("quoteDone").hidden = true;
+  dlg.showModal();
+};
+$("quoteForm").addEventListener("submit", async ev => {
+  if (ev.submitter && ev.submitter.value !== "send") return;
+  ev.preventDefault();
+  const fd = new FormData($("quoteForm"));
+  const lead = {
+    name: fd.get("name"), phone: fd.get("phone"), email: fd.get("email"), city: fd.get("city"), notes: fd.get("notes"),
+    color: `SW ${S.color.num} ${S.color.name}`, color_hex: S.color.hex, source: "Cabinet colour visualizer", page: document.referrer || location.href
+  };
+  if (fd.get("attach")) {
+    const c = finalCanvas(), small = document.createElement("canvas"), k = Math.min(1, 900 / Math.max(c.width, c.height));
+    small.width = Math.round(c.width * k); small.height = Math.round(c.height * k);
+    small.getContext("2d").drawImage(c, 0, 0, small.width, small.height);
+    lead.photo = small.toDataURL("image/jpeg", 0.75);
+  }
+  // Let the host page react too (e.g. its own tracking or form)
+  try { parent !== window && parent.postMessage({ type: "cabinet-visualizer:lead", lead: { ...lead, photo: undefined } }, "*"); } catch (e) {}
+  const btn = $("sendQuote"); btn.disabled = true; btn.textContent = "Sending…";
+  try {
+    if (CONFIG.quoteWebhook) {
+      // Form-encoded so it works across sites without CORS setup; HighLevel and Zapier both read these fields
+      await fetch(CONFIG.quoteWebhook, { method: "POST", mode: "no-cors", body: new URLSearchParams(lead) });
+    } else {
+      console.warn("Cabinet visualizer: no quoteWebhook set, so this lead was not sent anywhere.", lead);
+    }
+    $("quoteFields").hidden = true; $("quoteDone").hidden = false;
+    try { typeof gtag === "function" && gtag("event", "generate_lead", { method: "cabinet_visualizer" }); } catch (e) {}
+  } catch (e) {
+    alert("Sorry, that didn't send. Please check your connection and try again.");
+  } finally { btn.disabled = false; btn.textContent = "Send request"; }
+});
+
+/* ---------- embedding: tell the parent page our height ---------- */
+if (parent !== window && "ResizeObserver" in window) {
+  new ResizeObserver(() => parent.postMessage({ type: "cabinet-visualizer:height", height: document.documentElement.scrollHeight }, "*"))
+    .observe(document.body);
+}
+
+buildPopular();
+updateHint();
+</script>
+</body>
+</html>
