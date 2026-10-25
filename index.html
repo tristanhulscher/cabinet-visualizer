@@ -385,8 +385,8 @@ function setup(img) {
   const r2 = Math.max(2, Math.round(Math.max(w, h) / 260)); // smooth out wood grain for shading
   Object.assign(S, {
     w, h, orig: data, Lb: boxBlur(L, w, h, r1), Ab: boxBlur(A, w, h, r1), Bb: boxBlur(B, w, h, r1),
-    Y, Yb: boxBlur(Y, w, h, r2), mask: new Uint8Array(n), alpha: new Float32Array(n), history: [],
-    segments: [], photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
+    Y, Yb: boxBlur(Y, w, h, r2), Yd: boxBlur(Y, w, h, Math.max(1, Math.round(Math.max(w, h) / 480))), mask: new Uint8Array(n), alpha: new Float32Array(n), history: [],
+    autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
   });
   outImg = new ImageData(new Uint8ClampedArray(data), w, h);
   $("start").hidden = true; $("editor").hidden = false;
@@ -397,23 +397,41 @@ function setup(img) {
 }
 
 /* ---------- AI cabinet detection ---------- */
-// The server returns [{box_2d:[y0,x0,y1,x1], mask, label}] in 0-1000 coordinates. "cabinet" pieces are
-// painted; "glass" and "hardware" are cut out of them. Each piece stays tappable to switch it off/on.
+// The detection service sends the photo back with only the cabinets repainted magenta, so every
+// magenta pixel is cabinet. The photo is padded out to a shape the AI draws natively and trimmed
+// back afterwards, so its answer lines up with the photo pixel for pixel.
+const ASPECTS = [[1, 1], [2, 3], [3, 2], [3, 4], [4, 3], [4, 5], [5, 4], [9, 16], [16, 9], [21, 9]];
+const DRIFT_LIMIT = 12; // avg change outside the cabinets: a correct answer measured ~4, a 15px shift ~16
+
 async function autoDetect() {
   const id = S.photoId;
   S.detecting = true; $("busy").hidden = false; updateHint();
   try {
-    const k = Math.min(1, 1024 / Math.max(S.w, S.h)), c = document.createElement("canvas");
-    c.width = Math.round(S.w * k); c.height = Math.round(S.h * k);
-    c.getContext("2d").drawImage(before, 0, 0, c.width, c.height);
+    const ratio = S.w / S.h, off = a => Math.abs(Math.log(a[0] / a[1] / ratio));
+    const [aw, ah] = ASPECTS.reduce((best, a) => off(a) < off(best) ? a : best);
+    let pw = S.w, ph = S.h;
+    if (aw / ah > ratio) pw = Math.round(S.h * aw / ah); else ph = Math.round(S.w * ah / aw);
+    const ox = (pw - S.w) / 2, oy = (ph - S.h) / 2, k = Math.min(1, 1280 / Math.max(pw, ph));
+    const c = document.createElement("canvas");
+    c.width = Math.round(pw * k); c.height = Math.round(ph * k);
+    const cx = c.getContext("2d");
+    cx.fillStyle = "#808080"; cx.fillRect(0, 0, c.width, c.height);
+    cx.drawImage(before, ox * k, oy * k, S.w * k, S.h * k);
     const res = await fetch(CONFIG.detectUrl, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: c.toDataURL("image/jpeg", 0.85) })
+      body: JSON.stringify({ image: c.toDataURL("image/jpeg", 0.88), aspect: `${aw}:${ah}` })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
     if (id !== S.photoId) return; // a new photo was loaded meanwhile
-    await applyDetections(data.items || []);
+    const img = new Image();
+    await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = data.image; });
+    // Back to the photo's own frame: scale the answer to the padded size and cut the padding off
+    const m = document.createElement("canvas"); m.width = S.w; m.height = S.h;
+    const mx = m.getContext("2d", { willReadFrequently: true });
+    const sx = img.naturalWidth / pw, sy = img.naturalHeight / ph;
+    mx.drawImage(img, ox * sx, oy * sy, S.w * sx, S.h * sy, 0, 0, S.w, S.h);
+    applyMagenta(mx.getImageData(0, 0, S.w, S.h).data);
   } catch (e) {
     console.warn("Cabinet detection failed:", e);
     if (id === S.photoId) S.detectFailed = true;
@@ -422,156 +440,56 @@ async function autoDetect() {
   }
 }
 
-async function pieceMask(item) {
-  const { w, h } = S, b = item.box_2d || [0, 0, 0, 0];
-  const by0 = b[0] / 1000 * h, bx0 = b[1] / 1000 * w, by1 = b[2] / 1000 * h, bx1 = b[3] / 1000 * w;
-  const x0 = Math.max(0, Math.floor(bx0)), y0 = Math.max(0, Math.floor(by0));
-  const x1 = Math.min(w, Math.ceil(bx1)), y1 = Math.min(h, Math.ceil(by1));
-  const bw = x1 - x0, bh = y1 - y0;
-  if (bw < 2 || bh < 2) return null;
-  const c = document.createElement("canvas"); c.width = bw; c.height = bh;
-  const x = c.getContext("2d", { willReadFrequently: true });
-  x.fillStyle = "#fff";
-  let mask = item.mask;
-  if (typeof mask === "string" && mask.length > 50) {
-    // PNG probability map covering the box
-    const img = new Image();
-    await new Promise((r, j) => { img.onload = r; img.onerror = j; img.src = mask.startsWith("data:") ? mask : "data:image/png;base64," + mask; });
-    x.drawImage(img, 0, 0, bw, bh);
-  } else if (Array.isArray(mask) && mask.length) {
-    // One polygon [[x,y],...] or several [[[x,y],...],...]
-    const polys = typeof mask[0][0] === "number" ? [mask] : mask;
-    const pts = polys.flat();
-    // Points may be relative to the whole photo or to the box; pick whichever keeps them inside the box
-    const inBox = pts.filter(([px, py]) => px >= b[1] - 15 && px <= b[3] + 15 && py >= b[0] - 15 && py <= b[2] + 15).length;
-    const imageFrame = inBox >= pts.length * 0.8;
-    x.beginPath();
-    for (const poly of polys) poly.forEach(([px, py], i) => {
-      const X = imageFrame ? px / 1000 * w - x0 : (bx0 - x0) + px / 1000 * (bx1 - bx0);
-      const Y = imageFrame ? py / 1000 * h - y0 : (by0 - y0) + py / 1000 * (by1 - by0);
-      i ? x.lineTo(X, Y) : x.moveTo(X, Y);
-    });
-    x.fill("evenodd");
-  } else {
-    x.fillRect(0, 0, bw, bh); // no mask: fall back to the box
+function applyMagenta(ed) {
+  const { w, h, orig } = S, n = w * h, mask = new Uint8Array(n);
+  let drift = 0, samples = 0, found = 0;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const r = ed[p], g = ed[p + 1], b = ed[p + 2], hi = Math.max(r, b);
+    const magenta = r > g * 1.3 + 8 && b > g * 1.3 + 8 && hi > 30 && Math.abs(r - b) < hi * 0.5;
+    // ...and it must have turned magenta, not just look pinkish: glass panes and shiny appliances
+    // pick up a pink reflection from the painted frames, which only moves them a little
+    const towardR = (r - g) - (orig[p] - orig[p + 1]), towardB = (b - g) - (orig[p + 2] - orig[p + 1]);
+    if (magenta && Math.min(towardR, towardB) > Math.max(14, 0.3 * hi)) { mask[i] = 1; found++; }
+    else if (i % 7 === 0) { drift += Math.abs(r + g + b - orig[p] - orig[p + 1] - orig[p + 2]) / 3; samples++; }
   }
-  const d = x.getImageData(0, 0, bw, bh).data, m = new Uint8Array(bw * bh);
-  for (let i = 0; i < m.length; i++) m[i] = d[i * 4] > 127 && d[i * 4 + 3] > 127 ? 1 : 0;
-  return { x0, y0, bw, bh, m, on: true, label: String(item.label || "").toLowerCase() };
-}
-
-async function applyDetections(items) {
-  const { w, h } = S, cut = new Uint8Array(w * h), pieces = [];
-  for (const it of items) {
-    const label = String(it.label || "").toLowerCase();
-    const noOutline = !Array.isArray(it.mask) || it.mask.length < 3;
-    if (/hardware|handle|knob|pull/.test(label) && noOutline) { cutHardware(it.box_2d, cut); continue; }
-    const p = await pieceMask(it).catch(() => null);
-    if (!p) continue;
-    if (/glass|hardware|handle|knob|pull/.test(p.label)) {
-      for (let y = 0; y < p.bh; y++) for (let x = 0; x < p.bw; x++) if (p.m[y * p.bw + x]) cut[(p.y0 + y) * w + p.x0 + x] = 1;
-    } else pieces.push(p);
-  }
-  for (const p of pieces) {
-    for (let y = 0; y < p.bh; y++) for (let x = 0; x < p.bw; x++) if (cut[(p.y0 + y) * w + p.x0 + x]) p.m[y * p.bw + x] = 0;
-    // refinePiece(p) is off: with whole-run outlines it threw away brightly lit wood
-    // (lighting varies across a run), and the AI's outlines are already tight.
-  }
-  S.segments = pieces.filter(p => p.m.some(v => v));
-  if (!pieces.length) { S.detectFailed = true; return; }
+  drift = samples ? drift / samples : 0;
+  console.info(`Cabinet detection: ${(100 * found / n).toFixed(1)}% cabinet, drift ${drift.toFixed(1)}`);
+  if (found < n * 0.01 || drift > DRIFT_LIMIT) { S.detectFailed = true; return; }
+  // Cabinets are large connected areas: drop stray specks (reflections in ovens, chrome), and fill
+  // pinholes too small to be a knob
+  keepRegions(mask, 1, n * 0.002);
+  keepRegions(mask, 0, n * 0.00004);
+  // Reach one pixel past the AI's edge so the blend lands on the wall, not on a rim of old finish
+  const f = boxBlur(Float32Array.from(mask), w, h, 1);
+  for (let i = 0; i < n; i++) mask[i] = f[i] > 0.001 ? 1 : 0;
   pushHistory();
-  S.mask.fill(0);
-  pieces.forEach(p => setPiece(p, 1));
+  S.mask = mask; S.autoFound = true;
   maskChanged();
 }
 
-// Second check on the AI's outline: keep only pixels that look like this cabinet's own finish.
-// Drops what the outline swept up by mistake (wall at the edges, glass, handles, things in front),
-// while shadows and grain stay in because lightness counts for little.
-function refinePiece(p) {
-  const { w, Lb, Ab, Bb } = S, idx = [];
-  for (let y = 0; y < p.bh; y++) for (let x = 0; x < p.bw; x++) if (p.m[y * p.bw + x]) idx.push((p.y0 + y) * w + p.x0 + x);
-  if (idx.length < 50) return;
-  const step = Math.max(1, Math.floor(idx.length / 4000)), sL = [], sA = [], sB = [];
-  for (let k = 0; k < idx.length; k += step) { const i = idx[k]; sL.push(Lb[i]); sA.push(Ab[i]); sB.push(Bb[i]); }
-  const med = a => a.sort((u, v) => u - v)[a.length >> 1];
-  const mL = med(sL.slice()), mA = med(sA.slice()), mB = med(sB.slice());
-  const dist = i => Math.hypot((Lb[i] - mL) * 0.35, Ab[i] - mA, Bb[i] - mB);
-  const ds = []; for (let k = 0; k < idx.length; k += step) ds.push(dist(idx[k]));
-  ds.sort((u, v) => u - v);
-  const T = Math.max(10, Math.min(18, ds[Math.floor(ds.length * 0.6)] * 2));
-  const keep = new Float32Array(p.bw * p.bh);
-  for (let y = 0; y < p.bh; y++) for (let x = 0; x < p.bw; x++) {
-    const j = y * p.bw + x;
-    if (p.m[j] && dist((p.y0 + y) * w + p.x0 + x) <= T) keep[j] = 1;
+// Flip connected areas of `value` smaller than minSize pixels to the other value
+function keepRegions(mask, value, minSize) {
+  const { w } = S, n = mask.length, seen = new Uint8Array(n), stack = new Int32Array(n), region = [];
+  for (let s = 0; s < n; s++) {
+    if (seen[s] || mask[s] !== value) continue;
+    let sp = 0; stack[sp++] = s; seen[s] = 1; region.length = 0;
+    while (sp) {
+      const i = stack[--sp], x = i % w; region.push(i);
+      if (x > 0 && !seen[i - 1] && mask[i - 1] === value) { seen[i - 1] = 1; stack[sp++] = i - 1; }
+      if (x < w - 1 && !seen[i + 1] && mask[i + 1] === value) { seen[i + 1] = 1; stack[sp++] = i + 1; }
+      if (i >= w && !seen[i - w] && mask[i - w] === value) { seen[i - w] = 1; stack[sp++] = i - w; }
+      if (i + w < n && !seen[i + w] && mask[i + w] === value) { seen[i + w] = 1; stack[sp++] = i + w; }
+    }
+    if (region.length < minSize) for (const i of region) mask[i] = 1 - value;
   }
-  // Close pinholes (knots, specks) but never grow past the AI's outline
-  const r = Math.max(1, Math.round(Math.max(S.w, S.h) / 500));
-  let f = boxBlur(keep, p.bw, p.bh, r); for (let j = 0; j < f.length; j++) f[j] = f[j] > 0.001 ? 1 : 0;
-  f = boxBlur(f, p.bw, p.bh, r);
-  for (let j = 0; j < f.length; j++) p.m[j] = p.m[j] && (keep[j] || f[j] > 0.999) ? 1 : 0;
-}
-
-// Handles come back as boxes only. Inside a slightly padded box, the ring of pixels along the
-// edge is cabinet; anything clearly different from that ring is the handle and keeps its look.
-function cutHardware(b, cut) {
-  if (!b || b.length < 4) return;
-  const { w, h, Lb, Ab, Bb } = S;
-  const pad = Math.max(2, Math.round(Math.max(w, h) / 400));
-  const x0 = Math.max(0, Math.floor(b[1] / 1000 * w) - pad), x1 = Math.min(w - 1, Math.ceil(b[3] / 1000 * w) + pad);
-  const y0 = Math.max(0, Math.floor(b[0] / 1000 * h) - pad), y1 = Math.min(h - 1, Math.ceil(b[2] / 1000 * h) + pad);
-  if (x1 - x0 < 3 || y1 - y0 < 3 || (x1 - x0) * (y1 - y0) > w * h * 0.02) return; // not a handle-sized box
-  const rL = [], rA = [], rB = [];
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-    if (y > y0 + 1 && y < y1 - 1 && x > x0 + 1 && x < x1 - 1) continue;
-    const i = y * w + x; rL.push(Lb[i]); rA.push(Ab[i]); rB.push(Bb[i]);
-  }
-  const med = a => a.sort((u, v) => u - v)[a.length >> 1];
-  const mL = med(rL), mA = med(rA), mB = med(rB);
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-    const i = y * w + x;
-    // Lightness at half weight: the handle's shadow on the door is the door's colour, only darker
-    if (Math.hypot((Lb[i] - mL) * 0.5, Ab[i] - mA, Bb[i] - mB) > 14) cut[i] = 1;
-  }
-}
-
-function setPiece(p, val) {
-  const { w, mask } = S;
-  for (let y = 0; y < p.bh; y++) for (let x = 0; x < p.bw; x++) {
-    if (!p.m[y * p.bw + x]) continue;
-    const i = (p.y0 + y) * w + p.x0 + x;
-    // When switching a piece off, keep pixels another switched-on piece still covers
-    if (!val && S.segments.some(q => q !== p && q.on && pieceHas(q, p.x0 + x, p.y0 + y))) continue;
-    mask[i] = val;
-  }
-}
-const pieceHas = (p, x, y) => x >= p.x0 && y >= p.y0 && x < p.x0 + p.bw && y < p.y0 + p.bh && p.m[(y - p.y0) * p.bw + x - p.x0] === 1;
-function pieceAt(x, y) {
-  // Smallest piece under the finger, so a door wins over the cabinet run around it
-  return S.segments.filter(p => pieceHas(p, x, y)).sort((a, b) => a.bw * a.bh - b.bw * b.bh)[0];
-}
-function togglePiece(p) {
-  pushHistory();
-  p.on = !p.on;
-  setPiece(p, p.on ? 1 : 0);
-  maskChanged();
 }
 
 $("restart").onclick = () => { fileInput.value = ""; $("editor").hidden = true; $("start").hidden = false; fileInput.click(); };
 
 /* ---------- selection ---------- */
-function pushHistory() {
-  S.history.push({ mask: S.mask.slice(), on: S.segments.map(p => p.on) });
-  if (S.history.length > 25) S.history.shift();
-  updateUndo();
-}
+function pushHistory() { S.history.push(S.mask.slice()); if (S.history.length > 25) S.history.shift(); updateUndo(); }
 function updateUndo() { $("undo").disabled = !S.history.length; }
-$("undo").onclick = () => {
-  if (!S.history.length) return;
-  const h = S.history.pop();
-  S.mask = h.mask; S.segments.forEach((p, i) => { if (i < h.on.length) p.on = h.on[i]; });
-  updateUndo(); maskChanged();
-};
+$("undo").onclick = () => { if (!S.history.length) return; S.mask = S.history.pop(); updateUndo(); maskChanged(); };
 
 // Tap: flood-fill similar colour, then close small gaps (wood knots, grain) inside the area
 function wand(x, y) {
@@ -646,7 +564,7 @@ let raf = 0;
 function render() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); }
 function draw() {
   if (!outImg || !S.color) return;
-  const { orig, alpha, Yb, Ylight, yMean, tY, w, h } = S, out = outImg.data, n = w * h;
+  const { orig, alpha, Yd, Ylight, yMean, tY, w, h } = S, out = outImg.data, n = w * h;
   out.set(orig);
   for (let i = 0; i < n; i++) {
     const al = alpha[i];
@@ -654,7 +572,10 @@ function draw() {
     // Final-coat look: an even, solid colour. Only the room's broad lighting and a softened hint of the
     // door profiles carry over; the old finish's grain and blotches don't.
     const light = Math.pow(Math.min(2.5, Math.max(0.15, Ylight[i] / yMean)), 0.75);
-    const profile = Math.pow(Math.min(1.4, Math.max(0.55, Yb[i] / Math.max(1e-4, Ylight[i]))), 0.45);
+    // Keep strong shading (panel bevels, frames, shadow lines) and drop weak texture (grain, blotches):
+    // changes under ~12% from the surrounding light are flattened, bigger ones pass through
+    const d = Math.log(Math.max(1e-4, Yd[i]) / Math.max(1e-4, Ylight[i]));
+    const profile = Math.min(1.7, Math.max(0.3, Math.exp(Math.sign(d) * Math.max(0, Math.abs(d) - 0.12))));
     let yN = tY * light * profile;
     // Roll off highlights softly so light colours don't blow out to flat white
     if (yN > tY) { const room = Math.max(0.04, (1 - tY) * 0.9); yN = tY + room * (1 - Math.exp(-(yN - tY) / room)); }
@@ -701,8 +622,7 @@ const endDrag = ev => {
   if (!drag) return;
   if (drag.mode === "tap" && ev.type === "pointerup" && Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) < 10) {
     const p = toImage(ev), px = Math.min(S.w - 1, Math.max(0, Math.floor(p.x))), py = Math.min(S.h - 1, Math.max(0, Math.floor(p.y)));
-    const piece = pieceAt(px, py);
-    if (piece) togglePiece(piece); else if (!S.detecting) wand(px, py);
+    if (!S.detecting) wand(px, py);
   }
   if (drag.mode === "paint") maskChanged();
   drag = null;
@@ -755,10 +675,9 @@ function updateHint() {
   if (S.tool === "brush") return hint("Paint over any cabinet areas the tap missed.");
   if (S.tool === "erase") return hint("Paint over countertops, handles or walls that shouldn't change.");
   if (S.detecting) return hint("🔍 Finding your cabinets. This takes about 30 seconds, so hang tight…");
-  if (AUTO && S.adjusting) return hint("Tap a painted piece to switch it off, or tap an unpainted spot to add it. Tap <b>Done</b> when it looks right.");
-  if (AUTO && S.segments.length) return hint(`Your cabinets are shown in <b>${S.color.name}</b>. Pick any colour to try it.`);
+  if (AUTO && S.adjusting) return hint("Tap a spot the AI missed to add it, use <b>Brush</b> and <b>Erase</b> for fine fixes, then tap <b>Done</b>.");
+  if (AUTO && S.autoFound) return hint(`Your cabinets are shown in <b>${S.color.name}</b>. Pick any colour to try it.`);
   if (AUTO && S.detectFailed) return hint("We couldn't find the cabinets in this photo. Try one taken straight on with the lights on, or tap <b>Adjust</b> to paint them yourself.", true);
-  if (S.segments.length) return hint(`We found <b>${S.segments.length}</b> cabinet pieces. Tap a piece to switch it off or back on. Missed a spot? Tap it, or use <b>Brush</b>.`);
   if (S.detectFailed && !S.selected) return hint("We couldn't spot the cabinets automatically. <b>Tap each cabinet door</b> to paint it.", true);
   if (!S.selected) return hint("👆 <b>Tap a cabinet door</b> to paint it. Then tap each of the others.");
   hint("Keep tapping doors and drawers to add them. Spilled onto the wall? <b>Undo</b>, lower <b>Spread</b>, or use <b>Erase</b>.");

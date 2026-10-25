@@ -1,62 +1,34 @@
 // Cabinet Colour Visualizer: AI cabinet detection (Cloudflare Worker)
 //
-// The visualizer page POSTs {image: "data:image/jpeg;base64,..."} here. This Worker adds the
-// secret Gemini API key, asks Gemini where the cabinets are, and returns
-// {items: [{box_2d, mask, label}], seconds}. The key never reaches the browser.
+// The visualizer page POSTs {image: "data:image/jpeg;base64,...", aspect: "4:3"} here. This Worker
+// adds the secret Gemini API key and asks Google's image-editing model to repaint ONLY the cabinets
+// in flat magenta. It returns {image: "data:image/png;base64,...", seconds}; the page treats every
+// magenta pixel as cabinet and paints the real Sherwin-Williams colour there itself.
+// The key never reaches the browser.
 //
-// Setup (Cloudflare dashboard): Workers & Pages -> Create -> Worker -> paste this file -> Deploy.
-// Then Settings -> Variables and Secrets -> add a Secret named GEMINI_API_KEY.
+// Setup (Cloudflare dashboard): Workers & Pages -> cabinet-detect -> Edit code -> paste this file -> Deploy.
+// The key is a Secret named GEMINI_API_KEY (Settings -> Variables and Secrets).
 
-const MODEL = "gemini-4-argon"; // gemini-3.8-flash only returns boxes, not outlines
+const MODEL = "gemini-3-pro-image"; // "Nano Banana Pro": kept glass panes intact where Nano Banana 2 painted over them
 const ALLOWED_ORIGINS = [
   "https://tristanhulscher.github.io",
   "http://localhost:8766",
   "http://localhost:8767",
 ];
-const MAX_IMAGE_CHARS = 3_000_000;      // ~2.2 MB JPEG; the page sends ~1024px photos (~200 KB)
+const ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
+const MAX_IMAGE_CHARS = 3_000_000;      // ~2.2 MB JPEG; the page sends ~1280px photos (~250 KB)
 const PER_IP_LIMIT = 15;                // detections per IP per window (best effort, per Worker instance)
 const WINDOW_MS = 60 * 60 * 1000;
 
-const PROMPT = `You are segmenting a kitchen or bathroom photo for a cabinet-painting preview.
-A customer will see ONLY the cabinetry recoloured, so precision matters more than coverage.
+const PROMPT = `Edit this photo for a cabinet-painting preview.
+Repaint ONLY the cabinetry in a flat, solid, fully saturated magenta (#FF00FF): every cabinet door,
+drawer front, cabinet box, end panel, face frame, filler, toe kick, crown moulding on cabinets, and
+the sides and back of any island or peninsula cabinetry. Cover the whole cabinet surface, edge to edge.
 
-Return as FEW entries as possible: one "cabinet" entry per continuous run of cabinetry
-(for example: the upper run, the lower run, the island, a tall pantry). Trace each run's
-outer edge tightly. A run includes its doors, drawer fronts, boxes, end panels, face frames,
-fillers, toe kicks and attached crown moulding.
-
-Also return one "glass" entry per glass pane in a cabinet door (these are cut out).
-Also return one "hardware" entry per handle, knob or pull: a tight "box_2d" and an EMPTY
-"mask" [] (no outline needed).
-
-NEVER include in a cabinet outline, even when the same colour as the cabinets:
-walls, ceiling, room trim, window and door casings, room doors, countertops and their edges,
-backsplash and tile, open shelves, appliances of any kind (fridge, dishwasher, oven,
-microwave, hood), sinks, faucets, lights, windows, floor, furniture, or objects in front.
-Where the backsplash, an appliance or a window sits between cabinets, the outline must go
-around it, not across it.
-
-Output JSON with "box_2d", "mask" (polygon of [x, y] points, 0-1000) and "label".`;
-
-// Without a schema that requires "mask", the model answers with boxes only
-const SCHEMA = {
-  type: "object",
-  properties: {
-    boxes: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          box_2d: { type: "array", items: { type: "integer" } },
-          mask: { type: "array", items: { type: "array", items: { type: "integer" } } },
-          label: { type: "string", enum: ["cabinet", "glass", "hardware"] },
-        },
-        required: ["box_2d", "mask", "label"],
-      },
-    },
-  },
-  required: ["boxes"],
-};
+Do NOT change anything else, not even slightly: keep walls, ceiling, countertops, backsplash, tile,
+appliances, range hood, sink, faucet, windows, floor, lights, handles and knobs, glass panes in doors,
+and every object exactly as they are. Keep the same framing, size and perspective; do not crop,
+zoom, straighten or re-light the photo. Grey borders around the photo must stay grey.`;
 
 const hits = new Map(); // ip -> [timestamps]
 
@@ -86,16 +58,17 @@ function rateLimited(ip) {
   return false;
 }
 
-// The answer text sits in the last "model_output" step
-function outputText(interaction) {
-  const steps = interaction.steps || [];
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const s = steps[i];
-    if (s.type === "model_output" && Array.isArray(s.content)) {
-      return s.content.filter(c => c.type === "text").map(c => c.text).join("");
-    }
-  }
-  return "";
+async function callModel(env, jpegB64, aspect) {
+  const generationConfig = { responseModalities: ["IMAGE"] };
+  if (aspect) generationConfig.imageConfig = { aspectRatio: aspect };
+  return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+    body: JSON.stringify({
+      contents: [{ parts: [{ inline_data: { mime_type: "image/jpeg", data: jpegB64 } }, { text: PROMPT }] }],
+      generationConfig,
+    }),
+  });
 }
 
 export default {
@@ -109,39 +82,35 @@ export default {
     const ip = request.headers.get("CF-Connecting-IP") || "unknown";
     if (rateLimited(ip)) return reply({ error: "Too many photos, please try again later" }, 429, origin);
 
-    let image;
-    try { image = (await request.json()).image; } catch { image = null; }
+    let body;
+    try { body = await request.json(); } catch { body = {}; }
+    const image = body.image;
     if (typeof image !== "string" || !image.startsWith("data:image/jpeg;base64,") || image.length > MAX_IMAGE_CHARS) {
       return reply({ error: "Send a JPEG photo as a data URL" }, 400, origin);
     }
+    const aspect = ASPECTS.includes(body.aspect) ? body.aspect : null;
+    const jpeg = image.slice(image.indexOf(",") + 1);
 
     const t0 = Date.now();
-    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
-      body: JSON.stringify({
-        model: MODEL,
-        input: [
-          { type: "text", text: PROMPT },
-          { type: "image", data: image.slice(image.indexOf(",") + 1), mime_type: "image/jpeg" },
-        ],
-        response_format: { type: "text", mime_type: "application/json", schema: SCHEMA },
-        generation_config: { thinking_level: "low" },
-      }),
-    });
+    let res = await callModel(env, jpeg, aspect);
+    if (res.status === 400 && aspect) res = await callModel(env, jpeg, null); // in case aspectRatio isn't accepted
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 300);
       console.log("Gemini error", res.status, detail);
       return reply({ error: `Detection service error (${res.status})` }, 502, origin);
     }
-    let items = [];
-    try {
-      const parsed = JSON.parse(outputText(await res.json()).replace(/^\s*```(?:json)?|```\s*$/g, ""));
-      items = Array.isArray(parsed) ? parsed : parsed.boxes || [];
-    } catch (e) {
-      console.log("Could not read Gemini answer", String(e));
-      return reply({ error: "Could not read the detection result" }, 502, origin);
+    const data = await res.json();
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const img = parts.find(p => (p.inlineData || p.inline_data)?.data);
+    if (!img) {
+      console.log("No image in answer", JSON.stringify(data).slice(0, 300));
+      return reply({ error: "The detection service returned no image" }, 502, origin);
     }
-    return reply({ items, model: MODEL, seconds: Math.round((Date.now() - t0) / 100) / 10 }, 200, origin);
+    const inline = img.inlineData || img.inline_data;
+    return reply({
+      image: `data:${inline.mimeType || inline.mime_type || "image/png"};base64,${inline.data}`,
+      model: MODEL,
+      seconds: Math.round((Date.now() - t0) / 100) / 10,
+    }, 200, origin);
   },
 };
