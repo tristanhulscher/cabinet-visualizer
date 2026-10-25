@@ -720,6 +720,16 @@ function likeFinish(i, fin) {
   return dh < 0.35 && c < fin.chroma * 1.3;
 }
 
+// Inside the cabinet outline: the old finish, including lit edges (brighter and more saturated than the
+// average) and shadowed corners (darker, less saturated). Same hue family is enough there.
+function finishInside(i, fin) {
+  const { Ab, Bb } = S, c = Math.hypot(Ab[i], Bb[i]);
+  if (Math.hypot(Ab[i] - fin.a, Bb[i] - fin.b) < 12) return true;
+  if (fin.chroma < 8 || c < fin.chroma * 0.4 || c > fin.chroma * 2.5) return false;
+  let dh = Math.abs(Math.atan2(Bb[i], Ab[i]) - fin.hue); if (dh > Math.PI) dh = 2 * Math.PI - dh;
+  return dh < 0.4;
+}
+
 // Snap the outline to the photo's own edges (colour-guided filter): the AI answers at a lower
 // resolution and its edge can sit a few pixels off, which leaves rims of old finish or jagged lines.
 // Returns a soft 0..1 coverage per pixel.
@@ -828,7 +838,7 @@ async function paintFor(st, c) {
   }
 }
 
-function renderHardware(L, A, B, cab, w, h) {
+function renderHardware(L, A, B, cab, w, h, fin) {
   const n = w * h, big = Math.max(w, h), r = Math.max(8, Math.round(big / 60)), cf = Float32Array.from(cab);
   const mul = a => { const o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = a[i] * cf[i]; return o; };
   const den = boxBlur(cf, w, h, r), mL = boxBlur(mul(L), w, h, r), mA = boxBlur(mul(A), w, h, r), mB = boxBlur(mul(B), w, h, r);
@@ -858,6 +868,15 @@ function renderHardware(L, A, B, cab, w, h) {
     if (Math.max(bw, bh) / Math.min(bw, bh) > 7) continue;     // bar pulls are long; panel grooves longer
     if (area / (bw * bh) < 0.25) continue;                     // solid, not a shadow streak
     if (!edge || edgeIn / edge < 0.9) continue;                // sits on a door or drawer
+    // In the photo it must look like hardware too: metal or black, or with a metal glint. A lit door
+    // rail also stands out in a render, and putting the photo back there shows a stripe of old wood.
+    let woody = 0, lo = 100, hi = 0;
+    for (const i of region) {
+      if (finishInside(i, fin)) woody++;
+      const p = i * 4, l = rgbToLab(S.orig[p], S.orig[p + 1], S.orig[p + 2])[0];
+      if (l < lo) lo = l; if (l > hi) hi = l;
+    }
+    if (woody > area / 2 && hi - lo < 40) continue;
     for (const i of region) hw[i] = 1;
   }
   const grown = boxBlur(Float32Array.from(hw), w, h, 1);
@@ -945,41 +964,35 @@ function correctRender(px, c) {
   }
   const pct = (hist, q) => { let acc = 0; for (let i = 0; i < hist.length; i++) { acc += hist[i]; if (acc >= cnt * q) return i; } return hist.length - 1; };
   const mA = (pct(hA, 0.5) - 256) / 2, mB = (pct(hB, 0.5) - 256) / 2, lit = pct(hL, 0.85) / 10;
-  const t = rgbToLab(...hexRgb(c.hex)), k = 0.6 + 0.4 * t[0] / Math.max(lit, 1), litK = lit * k;
+  // Mostly the chip's own lightness: the AI paints dark colours (navy, black, greens) too light
+  const t = rgbToLab(...hexRgb(c.hex)), k = 0.25 + 0.75 * t[0] / Math.max(lit, 1), litK = lit * k;
   // The AI tends to over-darken whole panels that face away from the light (an island end turns flat
   // grey). Soften the broad shadow across a panel by a third; fine shading (door profiles) is untouched
   const r = Math.max(6, Math.round(Math.max(w, h) / 40)), cf = Float32Array.from(aiBase), Lm = new Float32Array(n);
   for (let i = 0; i < n; i++) Lm[i] = L[i] * cf[i];
   const num = boxBlur(Lm, w, h, r), den = boxBlur(cf, w, h, r);
   const out = new Uint8ClampedArray(n * 4);
-  // Where the AI left the photo as it was (dishes behind glass, open shelves, handles), keep the photo:
-  // only what it actually repainted is paint
-  // Colour difference, not brightness: navy over dark wood is about as dark, but a different colour.
-  // Where the AI skipped a spot: if it still looks like the old cabinet finish, the AI just missed it,
-  // so we paint it ourselves (from the primer-coat shading); if it looks like anything else (dishes
-  // behind glass, open-shelf contents), it isn't cabinet and keeps the photo.
-  const changed = new Float32Array(n), own = new Uint8Array(n), { Lb, Ab, Bb } = S;
-  const fa = new Uint32Array(512), fb = new Uint32Array(512); let fn = 0;
-  for (let i = 0; i < n; i++) if (aiBase[i]) { fa[Math.max(0, Math.min(511, Math.round(Ab[i] * 2) + 256))]++; fb[Math.max(0, Math.min(511, Math.round(Bb[i] * 2) + 256))]++; fn++; }
-  const med = h2 => { let acc = 0; for (let i = 0; i < 512; i++) { acc += h2[i]; if (acc >= fn / 2) return (i - 256) / 2; } return 0; };
-  const finA = med(fa), finB = med(fb), fin = finish(aiBase);
-  // Very dark old wood in deep shadow: a dark colour render barely differs from it, so trust the grey
-  // coat there instead (it painted it). Only solid patches count, single pixels would speckle.
-  let dark = null;
-  if (S.coatPainted) {
-    dark = new Float32Array(n);
-    for (let i = 0; i < n; i++) dark[i] = S.coatPainted[i] && Lb[i] < 25 ? 1 : 0;
-    dark = boxBlur(dark, w, h, 3);
+  // Inside the cabinet outline:
+  //  - the render repainted it: its own pixel (its light and detail), corrected to the chip
+  //  - the render skipped it but it's plainly the old finish (a lit edge, a shadowed corner), or very dark
+  //    wood the grey coat painted: we paint it ourselves, shaded from the coat
+  //  - anything else keeps the photo: dishes behind glass, open-shelf contents, handles, and wall the AI
+  //    mistook for cabinet (it sometimes invents crown moulding along the ceiling)
+  // Colour difference, not just brightness: navy over dark wood is about as dark, but a different colour.
+  const changed = new Float32Array(n), own = new Uint8Array(n), { Lb, Ab, Bb } = S, fin = finish(aiBase);
+  let coat = null;
+  if (S.coatPainted) { // only solid patches count, single pixels would speckle
+    coat = new Float32Array(n);
+    for (let i = 0; i < n; i++) coat[i] = S.coatPainted[i] && Lb[i] < 25 ? 1 : 0;
+    coat = boxBlur(coat, w, h, 3);
   }
   for (let i = 0; i < n; i++) {
     if (!aiOK[i]) continue;
     // Also painted: a spot whose colour moved clearly toward the chip, even if it's no lighter or darker
-    // (navy over dark cherry in shadow is almost as dark as before, but no longer brown)
     const tA = t[1] - Ab[i], tB = t[2] - Bb[i], tl = Math.hypot(tA, tB);
     const toward = tl > 10 && ((A[i] - Ab[i]) * tA + (B[i] - Bb[i]) * tB) / tl > Math.max(5, 0.35 * tl);
     if (Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) > 12 || toward) changed[i] = 1;
-    // Skipped, but still the old finish (or dark wood the coat painted): cabinet, so we paint it ourselves
-    else if (aiBase[i] && (Math.hypot(Ab[i] - finA, Bb[i] - finB) < 10 || likeFinish(i, fin) || (dark && dark[i] > 0.6))) { changed[i] = 1; own[i] = 1; }
+    else if (aiBase[i] && ((coat && coat[i] > 0.6) || finishInside(i, fin))) { changed[i] = 1; own[i] = 1; }
   }
   // Close thin unpainted seams (a 1-3px line where a door meets the crown or a frame) so they don't show
   // as a dashed line of old finish; bigger unpainted areas (glass, open shelves) are untouched
@@ -989,18 +1002,33 @@ function correctRender(px, c) {
   for (let i = 0; i < n; i++) if (aiBase[i] && !changed[i] && shrink[i] < 0.001) changed[i] = 1;
   // Hardware the AI drew (knobs it recoloured, pulls it restyled): small compact spots inside the
   // cabinets that stand out from the paint around them in this render. They show the original photo.
-  const rhw = renderHardware(L, A, B, aiBase, w, h);
+  const rhw = renderHardware(L, A, B, aiBase, w, h, fin);
   for (let i = 0; i < n; i++) if (rhw[i]) changed[i] = 0;
+  // Wood-coloured hardware candidates: real knobs if this render kept them as they were
+  if (S.hw) for (let i = 0; i < n; i++) if (S.hw[i] === 2 && Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) < 20) changed[i] = 0;
   const keep = boxBlur(changed, w, h, 1);
-  const ownL = rgbToLab(...hexRgb(c.hex))[0];
+  // Lightness two ways: the render's (corrected), and our own from the grey coat's shading
+  const ownL = t[0], Lr = new Float32Array(n), Lo = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     if (!aiOK[i]) continue;
     const broad = (den[i] > 0.05 ? num[i] / den[i] : L[i]) * k, fine = L[i] * k - broad;
-    const lifted = broad < litK ? litK - (litK - broad) * 0.65 : broad;
-    // A spot the AI missed: the exact chip colour, shaded like the primer coat
+    Lr[i] = broad < litK ? litK - (litK - broad) * 0.65 + fine : broad + fine;
+    Lo[i] = ownL * Math.pow(Math.min(2.5, Math.max(0.15, S.aiY[i] / S.aiMean)), 0.45);
+  }
+  // Spots we paint ourselves take on the brightness of the render's paint around them, so they blend in
+  // instead of showing as lighter or darker specks
+  const rr = Math.max(8, Math.round(Math.max(w, h) / 80)), isR = new Float32Array(n), dL = new Float32Array(n);
+  for (let i = 0; i < n; i++) if (changed[i] && !own[i] && aiBase[i]) { isR[i] = 1; dL[i] = Lr[i] - Lo[i]; }
+  // Measured close by where there's plenty of render paint, else over a wider area (a big patch the
+  // render skipped), and within limits
+  const offN = boxBlur(dL, w, h, rr), offD = boxBlur(isR, w, h, rr);
+  const wideN = boxBlur(dL, w, h, rr * 5), wideD = boxBlur(isR, w, h, rr * 5);
+  const offset = i => Math.max(-12, Math.min(12, offD[i] > 0.3 ? offN[i] / offD[i] : wideD[i] > 0.05 ? wideN[i] / wideD[i] : 0));
+  for (let i = 0; i < n; i++) {
+    if (!aiOK[i]) continue;
     const rgb = own[i]
-      ? labToRgb(Math.min(100, Math.max(0, ownL * Math.pow(Math.min(2.5, Math.max(0.15, S.aiY[i] / S.aiMean)), 0.45))), t[1], t[2])
-      : labToRgb(Math.min(100, Math.max(0, lifted + fine)), A[i] + t[1] - mA, B[i] + t[2] - mB);
+      ? labToRgb(Math.min(100, Math.max(0, Lo[i] + offset(i))), t[1], t[2])
+      : labToRgb(Math.min(100, Math.max(0, Lr[i])), A[i] + t[1] - mA, B[i] + t[2] - mB);
     out[i * 4] = rgb[0]; out[i * 4 + 1] = rgb[1]; out[i * 4 + 2] = rgb[2]; out[i * 4 + 3] = Math.round(keep[i] * 255);
   }
   return out;
@@ -1010,7 +1038,7 @@ function correctRender(px, c) {
 // differs from the cabinet finish around them. Found once from the original photo, so they keep their
 // real look whatever colour is picked first (the AI sometimes repaints them, so its renders can't tell us).
 function findHardware(coat) {
-  const { w, h, aiBase, Lb, Ab, Bb } = S, n = w * h, big = Math.max(w, h);
+  const { w, h, aiBase, Lb, Ab, Bb } = S, n = w * h, big = Math.max(w, h), fin = finish(aiBase);
   const r = Math.max(8, Math.round(big / 60)), cf = Float32Array.from(aiBase);
   const mul = a => { const o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = a[i] * cf[i]; return o; };
   const den = boxBlur(cf, w, h, r), mL = boxBlur(mul(Lb), w, h, r), mA = boxBlur(mul(Ab), w, h, r), mB = boxBlur(mul(Bb), w, h, r);
@@ -1049,10 +1077,22 @@ function findHardware(coat) {
     if (Math.max(bw, bh) / Math.min(bw, bh) > 2.5) continue;    // compact, not a groove
     if (area / (bw * bh) < 0.4) continue;                       // solid, not grain or shadow
     if (!edge || edgeIn / edge < 0.9) continue;                 // surrounded by cabinet
-    for (const i of region) hw[i] = 1;
+    // Metal or black, or with a metal highlight (bright glint on a dark knob): certainly hardware (1).
+    // Flat and wood-coloured could be a shadowed corner of the old wood instead (2): each colour render
+    // decides, since the AI keeps real knobs but repaints shadows (see correctRender)
+    let woody = 0, lo = 100, hi = 0;
+    for (const i of region) {
+      if (!S.holes[i] && finishInside(i, fin)) woody++;
+      const p = i * 4, l = rgbToLab(S.orig[p], S.orig[p + 1], S.orig[p + 2])[0];
+      if (l < lo) lo = l; if (l > hi) hi = l;
+    }
+    for (const i of region) hw[i] = woody > area / 2 && hi - lo < 40 ? 2 : 1;
   }
-  const grown = boxBlur(Float32Array.from(hw), w, h, 1);
-  S.hw = new Uint8Array(n); for (let i = 0; i < n; i++) S.hw[i] = grown[i] > 0.001 ? 1 : 0;
+  S.hw = new Uint8Array(n);
+  for (const level of [2, 1]) {
+    const grown = boxBlur(Float32Array.from(hw, v => v === level ? 1 : 0), w, h, 1);
+    for (let i = 0; i < n; i++) if (grown[i] > 0.001) S.hw[i] = level;
+  }
 }
 
 // Flip connected areas of `value` smaller than minSize pixels to the other value
@@ -1160,11 +1200,13 @@ function draw() {
   const { orig, alpha, Yd, Ylight, yMean, tY, w, h } = S, out = outImg.data, n = w * h;
   out.set(orig);
   const real = S.renders && S.renders[S.color.num];
+  // The quick preview borrows any photo-real render's map of what to leave alone (glass, open shelves)
+  const known = !real && S.renders && Object.values(S.renders)[0];
   for (let i = 0; i < n; i++) {
-    const al = alpha[i];
+    let al = alpha[i];
     if (al <= 0) continue;
     if (real && S.aiOK[i]) {
-      if (S.hw && S.hw[i]) continue; // keep the original handles and knobs
+      if (S.hw && S.hw[i] === 1) continue; // keep the original handles and knobs (wood-coloured ones: the render's alpha says)
       const p = i * 4, q = i * 4;
       const ak = al * real[q + 3] / 255;
       if (ak <= 0) continue;
@@ -1173,6 +1215,7 @@ function draw() {
       out[p] = orig[p] + (r - orig[p]) * ak; out[p + 1] = orig[p + 1] + (g - orig[p + 1]) * ak; out[p + 2] = orig[p + 2] + (b - orig[p + 2]) * ak;
       continue;
     }
+    if (known && S.aiOK[i]) { if (S.hw && S.hw[i] === 1) continue; al *= known[i * 4 + 3] / 255; if (al <= 0) continue; }
     // Final-coat look: an even, solid colour. Only the room's broad lighting and a softened hint of the
     // door profiles carry over; the old finish's grain and blotches don't.
     const light = Math.pow(Math.min(2.5, Math.max(0.15, Ylight[i] / yMean)), 0.75);
@@ -1180,7 +1223,10 @@ function draw() {
     // changes under ~12% from the surrounding light are flattened, bigger ones pass through
     const d = Math.log(Math.max(1e-4, Yd[i]) / Math.max(1e-4, Ylight[i]));
     const profile = Math.min(1.7, Math.max(0.3, Math.exp(Math.sign(d) * Math.max(0, Math.abs(d) - 0.12))));
-    let yN = S.aiOK && S.aiOK[i] ? tY * Math.min(2.5, Math.max(0.15, S.aiY[i] / S.aiMean)) : tY * light * profile;
+    // Lit faces brighten more gently than shadows darken, so deep colours (navy, black) stay deep
+    let ratio = Math.min(2.5, Math.max(0.15, S.aiOK && S.aiOK[i] ? S.aiY[i] / S.aiMean : light * profile));
+    if (ratio > 1) ratio = Math.pow(ratio, 0.6);
+    let yN = tY * ratio;
     // Roll off highlights softly so light colours don't blow out to flat white
     if (yN > tY) { const room = Math.max(0.04, (1 - tY) * 0.9); yN = tY + room * (1 - Math.exp(-(yN - tY) / room)); }
     const L = yN > 0.008856 ? 116 * Math.cbrt(yN) - 16 : 903.3 * yN;
