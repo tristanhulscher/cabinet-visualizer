@@ -388,7 +388,7 @@ function setup(img) {
   Object.assign(S, {
     w, h, orig: data, Lb: boxBlur(L, w, h, r1), Ab: boxBlur(A, w, h, r1), Bb: boxBlur(B, w, h, r1),
     Y, Yb: boxBlur(Y, w, h, r2), Yd: boxBlur(Y, w, h, Math.max(1, Math.round(Math.max(w, h) / 480))), mask: new Uint8Array(n), alpha: new Float32Array(n), history: [],
-    autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
+    aiY: null, aiOK: null, aiCore: null, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
   });
   outImg = new ImageData(new Uint8ClampedArray(data), w, h);
   $("start").hidden = true; $("editor").hidden = false;
@@ -448,10 +448,11 @@ function applyMagenta(ed) {
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     const r = ed[p], g = ed[p + 1], b = ed[p + 2], hi = Math.max(r, b);
     const magenta = r > g * 1.3 + 8 && b > g * 1.3 + 8 && hi > 30 && Math.abs(r - b) < hi * 0.5;
-    // ...and it must have turned magenta, not just look pinkish: glass panes and shiny appliances
-    // pick up a pink reflection from the painted frames, which only moves them a little
-    const towardR = (r - g) - (orig[p] - orig[p + 1]), towardB = (b - g) - (orig[p + 2] - orig[p + 1]);
-    if (magenta && Math.min(towardR, towardB) > Math.max(14, 0.3 * hi)) { mask[i] = 1; found++; }
+    // ...and it must have turned magenta, not just picked up a pink reflection (glass, chrome). Real
+    // paint pushes blue far above green; red can't be the test because cherry and oak start out red.
+    // Bright pixels must also be strongly coloured, unless the blue jump is huge
+    const towardB = (b - g) - (orig[p + 2] - orig[p + 1]), sat = (hi - g) / Math.max(hi, 1);
+    if (magenta && towardB > Math.max(14, 0.3 * hi) && (hi < 120 || sat > 0.33 || towardB > 90)) { mask[i] = 1; found++; }
     else if (i % 7 === 0) { drift += Math.abs(r + g + b - orig[p] - orig[p + 1] - orig[p + 2]) / 3; samples++; }
   }
   drift = samples ? drift / samples : 0;
@@ -461,9 +462,26 @@ function applyMagenta(ed) {
   // pinholes too small to be a knob
   keepRegions(mask, 1, n * 0.002);
   keepRegions(mask, 0, n * 0.00004);
-  // Reach one pixel past the AI's edge so the blend lands on the wall, not on a rim of old finish
+  const core = mask.slice();
+  // Reach one pixel past the AI's edge (at half strength) so the blend lands on the wall, not on a
+  // rim of old finish
   const f = boxBlur(Float32Array.from(mask), w, h, 1);
   for (let i = 0; i < n; i++) mask[i] = f[i] > 0.001 ? 1 : 0;
+  // Light and shadow for the new paint come from the AI's own render of the painted cabinets:
+  // it has the door shapes and room lighting but none of the old finish's grain or glare
+  const s = new Float32Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) s[i] = LIN[(ed[p] + ed[p + 2]) >> 1] * core[i];
+  const cf = Float32Array.from(core);
+  const num = boxBlur(s, w, h, 4), den = boxBlur(cf, w, h, 4), sm = boxBlur(s, w, h, 1), sd = boxBlur(cf, w, h, 1);
+  const aiY = new Float32Array(n);
+  let sum = 0, cnt = 0;
+  for (let i = 0; i < n; i++) {
+    if (!mask[i]) continue;
+    // Averages count cabinet pixels only, so edges don't pick up darkness from outside
+    aiY[i] = core[i] ? sm[i] / sd[i] : (den[i] > 0.01 ? num[i] / den[i] : 0);
+    if (core[i]) { sum += aiY[i]; cnt++; }
+  }
+  Object.assign(S, { aiY, aiOK: mask.slice(), aiCore: core, aiMean: cnt ? sum / cnt : 0.2 });
   pushHistory();
   S.mask = mask; S.autoFound = true;
   maskChanged();
@@ -536,6 +554,7 @@ const brushRadius = () => (+$("size").value / 1000) * Math.max(S.w, S.h);
 function maskChanged() {
   const { w, h, mask, Yb } = S, n = w * h;
   S.alpha = boxBlur(Float32Array.from(mask), w, h, 1);
+  if (S.aiCore) for (let i = 0; i < n; i++) if (mask[i] && S.aiOK[i] && !S.aiCore[i]) S.alpha[i] *= 0.5;
   let sum = 0, cnt = 0;
   for (let i = 0; i < n; i++) if (mask[i]) { sum += Yb[i]; cnt++; }
   S.yMean = cnt ? sum / cnt : 0.2;
@@ -578,7 +597,7 @@ function draw() {
     // changes under ~12% from the surrounding light are flattened, bigger ones pass through
     const d = Math.log(Math.max(1e-4, Yd[i]) / Math.max(1e-4, Ylight[i]));
     const profile = Math.min(1.7, Math.max(0.3, Math.exp(Math.sign(d) * Math.max(0, Math.abs(d) - 0.12))));
-    let yN = tY * light * profile;
+    let yN = S.aiOK && S.aiOK[i] ? tY * Math.min(2.5, Math.max(0.15, S.aiY[i] / S.aiMean)) : tY * light * profile;
     // Roll off highlights softly so light colours don't blow out to flat white
     if (yN > tY) { const room = Math.max(0.04, (1 - tY) * 0.9); yN = tY + room * (1 - Math.exp(-(yN - tY) / room)); }
     const L = yN > 0.008856 ? 116 * Math.cbrt(yN) - 16 : 903.3 * yN;
