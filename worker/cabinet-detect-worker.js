@@ -7,8 +7,13 @@
 // the grey coat, and paints the real Sherwin-Williams colour there itself.
 // The key never reaches the browser.
 //
+// Bot check (Cloudflare Turnstile): when the TURNSTILE_SECRET secret is set, the page must first send
+// {mode: "hello", turnstile: <token>}; it gets back a signed session that every other request carries.
+// Without that secret nothing is checked, so the page keeps working while it's being set up.
+//
 // Setup (Cloudflare dashboard): Workers & Pages -> cabinet-detect -> Edit code -> paste this file -> Deploy.
-// The key is a Secret named GEMINI_API_KEY (Settings -> Variables and Secrets).
+// The key is a Secret named GEMINI_API_KEY (Settings -> Variables and Secrets); the Turnstile widget's
+// secret key goes in a Secret named TURNSTILE_SECRET.
 
 const MODEL = "gemini-3.1-flash-image"; // "Nano Banana 2": matched or beat Pro on test kitchens at a fraction of the cost
 const ALLOWED_ORIGINS = [
@@ -20,6 +25,8 @@ const ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"
 const MAX_IMAGE_CHARS = 4_000_000;      // ~3 MB JPEG; the page sends ~2048px photos (~600 KB)
 const FIND_LIMIT = 10;                  // photo uploads per visitor per hour
 const PAINT_LIMIT = 18;                 // colour renders per visitor per day (page allows 5 colours x up to 3 angles, plus retries)
+const HELLO_LIMIT = 30;                 // bot checks per visitor per hour
+const SESSION_MS = 3 * 60 * 60 * 1000;  // a passed bot check is good for 3 hours
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
 
 const PROMPT = `Edit this photo for a cabinet-painting preview.
@@ -91,6 +98,32 @@ function rateLimited(key, limit, windowMs) {
   return false;
 }
 
+// Sessions are "<expiry>.<id>.<signature>", signed with the Turnstile secret, so no storage is needed
+const enc = new TextEncoder();
+const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+async function sign(env, text) {
+  const key = await crypto.subtle.importKey("raw", enc.encode("session:" + env.TURNSTILE_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return b64url(await crypto.subtle.sign("HMAC", key, enc.encode(text)));
+}
+async function newSession(env) {
+  const body = `${Date.now() + SESSION_MS}.${crypto.randomUUID().slice(0, 8)}`;
+  return `${body}.${await sign(env, body)}`;
+}
+async function sessionId(env, session) {
+  const [exp, id, sig] = String(session || "").split(".");
+  if (!exp || !id || !sig || +exp < Date.now()) return null;
+  return sig === await sign(env, `${exp}.${id}`) ? id : null;
+}
+async function turnstileOK(env, token, ip) {
+  if (typeof token !== "string" || !token || token.length > 4096) return false;
+  const form = new FormData();
+  form.append("secret", env.TURNSTILE_SECRET); form.append("response", token); form.append("remoteip", ip);
+  const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!data.success) console.log("Turnstile failed", JSON.stringify(data["error-codes"] || []));
+  return !!data.success;
+}
+
 async function callModel(env, jpegB64, aspect, prompt, size) {
   const generationConfig = { responseModalities: ["IMAGE"] };
   if (aspect || size) generationConfig.imageConfig = { ...(aspect && { aspectRatio: aspect }), ...(size && { imageSize: size }) };
@@ -133,6 +166,20 @@ export default {
 
     let body;
     try { body = await request.json(); } catch { body = {}; }
+
+    // Bot check: swap a Turnstile token for a session (no AI involved, so no cost)
+    if (body.mode === "hello") {
+      if (!env.TURNSTILE_SECRET) return reply({ session: "open" }, 200, origin);
+      if (rateLimited("h:" + ip, HELLO_LIMIT, HOUR)) return reply({ error: "Too many tries, please wait a bit" }, 429, origin);
+      if (!(await turnstileOK(env, body.turnstile, ip))) return reply({ error: "Bot check failed", needCheck: true }, 403, origin);
+      return reply({ session: await newSession(env) }, 200, origin);
+    }
+    let sid = "";
+    if (env.TURNSTILE_SECRET) {
+      sid = await sessionId(env, body.session);
+      if (!sid) return reply({ error: "Please refresh the page", needCheck: true }, 401, origin);
+    }
+
     const image = body.image;
     if (typeof image !== "string" || !image.startsWith("data:image/jpeg;base64,") || image.length > MAX_IMAGE_CHARS) {
       return reply({ error: "Send a JPEG photo as a data URL" }, 400, origin);
@@ -141,7 +188,9 @@ export default {
     const jpeg = image.slice(image.indexOf(",") + 1);
 
     const t0 = Date.now();
-    if (rateLimited((body.mode === "paint" ? "p:" : "f:") + ip, body.mode === "paint" ? PAINT_LIMIT : FIND_LIMIT, body.mode === "paint" ? DAY : HOUR)) {
+    // Limits per visitor (IP) and, with the bot check on, per session too
+    const kind = body.mode === "paint" ? "p:" : "f:", limit = body.mode === "paint" ? PAINT_LIMIT : FIND_LIMIT, span = body.mode === "paint" ? DAY : HOUR;
+    if (rateLimited(kind + ip, limit, span) || (sid && rateLimited(kind + "s:" + sid, limit, span))) {
       return reply({ error: "You've reached today's limit, please try again later" }, 429, origin);
     }
     if (body.mode === "paint") {
