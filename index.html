@@ -621,7 +621,7 @@ async function autoDetect() {
       if (!photos.includes(st)) return; // started over meanwhile
       const [found, coat] = await Promise.all([st.pad.unpad(data.image), data.grey ? st.pad.unpad(data.grey).catch(() => null) : null]);
       if (!photos.includes(st)) return;
-      withState(st, () => applyMagenta(found, coat));
+      withState(st, () => { applyMagenta(found, coat); if (S.autoFound && coat) measureRoom(coat); });
       if (st.autoFound) break;
     }
     if (st.autoFound) {
@@ -1042,8 +1042,35 @@ function updateSaved() {
 
 function updateBadge() { $("hd").hidden = !(S.color && S.renderPending && coloursHere().some(c => S.renderPending.has(c.num))); }
 
-// Keep the AI's light and detail; shift its colour so the cabinets average to the exact chip hue, and
-// anchor brightness so the best-lit cabinet faces sit near the chip's lightness
+// The room's light, read off the AI's grey coat like a photographer's grey card: every cabinet in #808080
+// paint shows how bright neutral paint comes out on the best-lit faces, and the colour cast the room's light
+// (and the camera) gives it. Each chip is then shown as it would look in that light (roomChip): a white
+// in a dim, warm kitchen is a warm light grey like its ceiling, not a white brighter than the lights
+function measureRoom(coat) {
+  const { aiBase, coatPainted } = S, n = aiBase.length, hY = new Uint32Array(1001);
+  let r = 0, g = 0, b = 0, cnt = 0;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    if (!aiBase[i] || (coatPainted && !coatPainted[i])) continue;
+    const R = LIN[coat[p]], G = LIN[coat[p + 1]], B = LIN[coat[p + 2]];
+    hY[Math.min(1000, Math.round((R * 0.2126 + G * 0.7152 + B * 0.0722) * 1000))]++;
+    r += R; g += G; b += B; cnt++;
+  }
+  if (cnt < 1000) return; // hardly any grey coat: keep the chips as they are
+  let acc = 0, q = 0;
+  while (q < 1000 && (acc += hY[q]) < cnt * 0.85) q++;
+  const Y = r * 0.2126 + g * 0.7152 + b * 0.0722;
+  S.room = { lit: q / 1000, cast: [r / Y, g / Y, b / Y] };
+}
+// The chip (Lab) as it would look on the best-lit cabinet faces in this photo. A bright room doesn't make it
+// lighter than the chip itself: whites would glare and the AI already paints dark colours too light
+function roomChip(c) {
+  if (!S.room) return rgbToLab(...hexRgb(c.hex));
+  const k = Math.min(1, S.room.lit / LIN[128]);
+  return rgbToLab(...hexRgb(c.hex).map((v, j) => gamma(Math.min(1, LIN[v] * S.room.cast[j] * k))));
+}
+
+// Keep the AI's light and detail; shift its colour so the cabinets average to the chip's hue, and anchor
+// brightness so the best-lit cabinet faces sit near the chip's lightness, both as it looks in this room's light
 function correctRender(px, c) {
   const { w, h, aiOK, aiBase } = S, n = w * h;
   const L = new Float32Array(n), A = new Float32Array(n), B = new Float32Array(n);
@@ -1061,8 +1088,8 @@ function correctRender(px, c) {
   }
   const pct = (hist, q) => { let acc = 0; for (let i = 0; i < hist.length; i++) { acc += hist[i]; if (acc >= cnt * q) return i; } return hist.length - 1; };
   const mA = (pct(hA, 0.5) - 256) / 2, mB = (pct(hB, 0.5) - 256) / 2, lit = pct(hL, 0.85) / 10;
-  // Mostly the chip's own lightness: the AI paints dark colours (navy, black, greens) too light
-  const t = rgbToLab(...hexRgb(c.hex)), k = 0.25 + 0.75 * t[0] / Math.max(lit, 1), litK = lit * k;
+  // Mostly the chip's lightness in this room's light: the AI paints dark colours (navy, black, greens) too light
+  const t = roomChip(c), k = 0.25 + 0.75 * t[0] / Math.max(lit, 1), litK = lit * k;
   // The AI tends to over-darken whole panels that face away from the light (an island end turns flat
   // grey). Soften the broad shadow across a panel by a third; fine shading (door profiles) is untouched
   const r = Math.max(6, Math.round(Math.max(w, h) / 40)), cf = Float32Array.from(aiBase), Lm = new Float32Array(n);
@@ -1187,16 +1214,19 @@ function findHardware(coat) {
     if (Math.max(bw, bh) / Math.min(bw, bh) > 2.5) continue;    // compact, not a groove
     if (area / (bw * bh) < 0.4) continue;                       // solid, not grain or shadow
     if (!edge || edgeIn / edge < 0.9) continue;                 // surrounded by cabinet
-    // Metal or black, or with a metal highlight (bright glint on a dark knob): certainly hardware (1).
-    // Flat and wood-coloured could be a shadowed corner of the old wood instead (2): each colour render
-    // decides, since the AI keeps real knobs but repaints shadows (see correctRender)
-    let woody = 0, lo = 100, hi = 0;
+    // Metal or black (mostly colourless), or with a metal highlight (bright glint on a dark knob): certainly
+    // hardware (1). Anything else, flat and tinted, could be a shadowed corner of the old wood or the tail of
+    // the shadow line under a countertop instead (2): each colour render decides, since the AI keeps real
+    // knobs but repaints shadows (see correctRender)
+    let woody = 0, grey = 0, lo = 100, hi = 0;
     for (const i of region) {
       if (!S.holes[i] && finishInside(i, fin)) woody++;
-      const p = i * 4, l = rgbToLab(S.orig[p], S.orig[p + 1], S.orig[p + 2])[0];
+      const p = i * 4, [l, a, b] = rgbToLab(S.orig[p], S.orig[p + 1], S.orig[p + 2]);
       if (l < lo) lo = l; if (l > hi) hi = l;
+      if (Math.hypot(a, b) < 8) grey++;
     }
-    for (const i of region) hw[i] = woody > area / 2 && hi - lo < 40 ? 2 : 1;
+    const certain = hi - lo >= 40 || (grey > area / 2 && woody <= area / 2);
+    for (const i of region) hw[i] = certain ? 1 : 2;
   }
   // One pixel wider to catch the knob's soft edge, but not onto wood (a brown ring shows on a light colour)
   S.hw = new Uint8Array(n);
@@ -1519,14 +1549,19 @@ function maskChanged() {
 }
 
 /* ---------- painting ---------- */
-// Per colour: lightness (0..1000) -> rgb for the quick preview, and the chip's luminance
+// Per colour: lightness (0..1000) -> rgb for the quick preview, and the luminance of an average-lit cabinet
+// face, both as the chip looks in this photo's light (see measureRoom)
 const LUTS = new Map();
 function lutFor(c) {
-  let v = LUTS.get(c.num);
+  const key = S.room ? c.num + ":" + S.photoId : c.num;
+  let v = LUTS.get(key);
   if (!v) {
-    const [L, a, b] = rgbToLab(...hexRgb(c.hex)), lut = new Uint8Array(1001 * 3);
+    const [, a, b] = roomChip(c), L = rgbToLab(...hexRgb(c.hex))[0], lut = new Uint8Array(1001 * 3);
     for (let i = 0; i <= 1000; i++) lut.set(labToRgb(i / 10, a, b), i * 3);
-    LUTS.set(c.num, v = { lut, tY: fInv((L + 16) / 116) });
+    // The chip's luminance on an average-lit face, set so the best-lit faces come out as bright as in the
+    // photo-real render (roomChip), through the light curve the preview uses (see draw)
+    const tY = fInv((L + 16) / 116), lit = S.room && S.room.lit;
+    LUTS.set(key, v = { lut, tY: S.room ? tY * Math.min(1, lit / LIN[128] / Math.pow(Math.max(1, lit / S.aiMean), 0.6)) : tY });
   }
   return v;
 }
