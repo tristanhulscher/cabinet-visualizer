@@ -137,6 +137,25 @@
   .photo-item span { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(255,255,255,.6); font-weight: 700; }
   .photo-item.add { border: 2px dashed var(--line); font-size: 12px; font-weight: 600; color: var(--muted); }
   .saved-item.loading { display: grid; place-items: center; min-height: 120px; font-size: 12px; color: var(--muted); }
+  /* One colour or two-tone; in two-tone, the part (uppers, lowers, island) the next colour goes on */
+  .look { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin-top: 12px; }
+  .parts { display: flex; gap: 8px; flex: 1 1 300px; min-width: 0; }
+  .parts p { margin: 0; font-size: 13px; color: var(--muted); }
+  .part {
+    flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 5px; line-height: 1.25;
+    border: 2px solid var(--line); border-radius: 12px; background: #fff; cursor: pointer; text-align: left;
+  }
+  .part[aria-pressed="true"] { border-color: var(--accent); }
+  .part.absent { opacity: .55; }
+  .part i { flex: none; width: 28px; height: 28px; border-radius: 7px; border: 1px solid rgba(0,0,0,.12); }
+  .part span { min-width: 0; }
+  .part b, .part small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .part b { font-size: 13px; }
+  .part small { font-size: 12px; color: var(--muted); }
+  /* On bigger screens it sits at the top of the colour panel, parts one under another */
+  .palette .look { margin: 0 0 12px; }
+  .palette .parts { flex-direction: column; flex-basis: 100%; }
+  .palette .part { flex: none; }
   .actions { display: grid; gap: 8px; margin-top: 16px; }
   .actions .btn { width: 100%; }
 
@@ -149,8 +168,9 @@
   .dlg { padding: 22px; }
   .dlg h2 { margin: 0 0 4px; font-size: 21px; }
   .dlg p { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
-  .dlg .picked { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--panel); margin-bottom: 14px; font-weight: 600; }
-  .dlg .picked i { width: 28px; height: 28px; border-radius: 6px; border: 1px solid rgba(0,0,0,.12); }
+  .dlg .picked { display: grid; gap: 6px; padding: 8px 10px; border-radius: 10px; background: var(--panel); margin-bottom: 14px; font-weight: 600; }
+  .dlg .picked div { display: flex; align-items: center; gap: 10px; }
+  .dlg .picked i { flex: none; width: 28px; height: 28px; border-radius: 6px; border: 1px solid rgba(0,0,0,.12); }
   .field { display: grid; gap: 4px; margin-bottom: 10px; font-size: 13px; font-weight: 600; }
   .field input, .field textarea { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-weight: 400; width: 100%; }
   .field textarea { min-height: 70px; resize: vertical; }
@@ -170,6 +190,8 @@
     .quick { display: flex; gap: 8px; overflow-x: auto; margin-top: 10px; padding: 2px 2px 6px; scroll-snap-type: x proximity; }
     .quick .sw { flex: 0 0 62px; scroll-snap-align: start; }
     .quick .sw em { display: none; }
+    .part { gap: 6px; padding: 4px 6px 4px 4px; }
+    .part i { width: 22px; height: 22px; }
   }
   @media (max-width: 480px) { .row2 { grid-template-columns: 1fr; } }
 </style>
@@ -219,6 +241,13 @@
         <div class="saved-head"><b>Your colours</b><span id="savedCount"></span></div>
         <div class="saved-list" id="savedList"></div>
       </div>
+      <div class="look" id="look" hidden>
+        <div class="seg" role="group" aria-label="One colour or two-tone">
+          <button type="button" data-two="0" aria-pressed="true">One colour</button>
+          <button type="button" data-two="1" aria-pressed="false">Two-tone</button>
+        </div>
+        <div class="parts" id="parts" role="group" aria-label="Part to colour" hidden></div>
+      </div>
       <div class="quick" id="quick" aria-label="Popular cabinet colours"></div>
       <div class="hint" id="hint"></div>
       <p class="noise-note" id="noiseNote" hidden></p>
@@ -243,7 +272,7 @@
     <aside class="palette" aria-label="Sherwin-Williams colours">
       <div class="current">
         <span class="chip" id="curChip"></span>
-        <div><small>Your colour</small><strong id="curName"></strong><span id="curNum" style="color:var(--muted);font-size:13px"></span></div>
+        <div><small id="curLabel">Your colour</small><strong id="curName"></strong><span id="curNum" style="color:var(--muted);font-size:13px"></span></div>
       </div>
       <div id="popular"></div>
       <h3>Find any Sherwin-Williams colour</h3>
@@ -269,7 +298,7 @@
     <div id="quoteFields">
       <h2>Get your free cabinet quote</h2>
       <p>We'll get back to you within one business day.</p>
-      <div class="picked"><i id="qChip"></i><span id="qColor"></span></div>
+      <div class="picked" id="qPicked"></div>
       <div class="row2">
         <label class="field">Name<input name="name" required autocomplete="name"></label>
         <label class="field">Phone<input name="phone" type="tel" required autocomplete="tel"></label>
@@ -381,7 +410,8 @@ let S = {
   mask: null, alpha: null,          // hard selection 0/1 and feathered edge 0..1
   yMean: 0.2,
   color: null, tool: "wand",
-  history: [], comparing: false, split: 0.5, showSel: false
+  history: [], comparing: false, split: 0.5, showSel: false,
+  two: false, look: null, part: 2   // two-tone: a colour per part (uppers, lowers, island), and the part being picked
 };
 const before = $("before"), after = $("after"), stage = $("stage");
 const bctx = before.getContext("2d"), actx = after.getContext("2d", { willReadFrequently: true });
@@ -389,7 +419,7 @@ let outImg = null;
 const MAX_PHOTOS = 3;
 const photos = [];                                 // one state object per angle
 const G = { saved: [], pending: new Set(), count: 0 }; // colours chosen for photo-real, shared by all angles
-const UI_KEYS = ["color", "tool", "comparing", "split", "showSel"];
+const UI_KEYS = ["color", "tool", "comparing", "split", "showSel", "two", "look", "part"];
 // Run fn with S temporarily set to another photo (for answers that arrive for a photo not on screen)
 function withState(st, fn) { const prev = S; S = st; try { return fn(); } finally { S = prev; } }
 
@@ -434,7 +464,8 @@ function setup(img) {
   Object.assign(S, {
     w, h, orig: data, Lb: boxBlur(L, w, h, r1), Ab: boxBlur(A, w, h, r1), Bb: boxBlur(B, w, h, r1),
     Y, Yb: boxBlur(Y, w, h, r2), Yd: boxBlur(Y, w, h, Math.max(1, Math.round(Math.max(w, h) / 480))), mask: new Uint8Array(n), alpha: new Float32Array(n), history: [],
-    aiY: null, aiOK: null, aiSoft: null, aiBase: null, renders: {}, renderPending: new Set(), thumbs: {}, thumb: null, saved: G.saved, pending: G.pending, hw: null, pad: null, serviceDown: false, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
+    aiY: null, aiOK: null, aiSoft: null, aiBase: null, renders: {}, renderPending: new Set(), thumbs: {}, thumb: null, saved: G.saved, pending: G.pending, hw: null, pad: null, serviceDown: false, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false,
+    parts: null, partsBusy: false, partsFailed: false
   });
   outImg = new ImageData(new Uint8ClampedArray(data), w, h);
   const tk = 160 / Math.max(w, h), tc = document.createElement("canvas");
@@ -454,9 +485,9 @@ function switchTo(st) {
   for (const c of [before, after]) { c.width = S.w; c.height = S.h; }
   bctx.putImageData(new ImageData(new Uint8ClampedArray(S.orig), S.w, S.h), 0, 0);
   outImg = new ImageData(new Uint8ClampedArray(S.orig), S.w, S.h);
-  setCompare(false); buildLut(); render();
+  setCompare(false); render();
   $("busy").hidden = !S.detecting;
-  updatePhotos(); updateSaved(); updateBadge(); updateHint();
+  updatePhotos(); updateSaved(); updateBadge(); updateHint(); updateLook();
 }
 
 function updatePhotos() {
@@ -469,7 +500,7 @@ function updatePhotos() {
     b.title = `Angle ${i + 1}`;
     const img = document.createElement("img"); img.src = st.thumb; img.alt = `Angle ${i + 1}`;
     b.append(img);
-    if (st.detecting) { const s = document.createElement("span"); s.textContent = "…"; b.append(s); }
+    if (st.detecting || st.partsBusy) { const s = document.createElement("span"); s.textContent = "…"; b.append(s); }
     b.onclick = () => switchTo(st);
     list.append(b);
   });
@@ -580,7 +611,7 @@ async function autoDetect() {
     // result arrives ~10s sooner. It's only kept (and counted) once the cabinets are found.
     st.early = {};
     const first = [...G.saved, ...[...G.pending].map(num => BY_NUM[num])];
-    if (S.color && !first.includes(S.color) && rendersLeft() > 0) first.push(S.color);
+    for (const c of lookColours()) if (!first.includes(c) && rendersLeft() > 0) first.push(c);
     for (const c of first) { const p = fetchPaint(st, c); p.catch(() => {}); st.early[c.num] = p; }
     // The AI occasionally returns a shifted or redrawn picture; the checks in applyMagenta reject it,
     // and one more try usually comes back clean
@@ -597,7 +628,8 @@ async function autoDetect() {
       // Colours already chosen on other angles render here too; the current colour starts right away
       for (const c of G.saved) paintFor(st, c);
       for (const num of G.pending) paintFor(st, BY_NUM[num]);
-      if (S === st) { updateSaved(); requestPaint(S.color); }
+      if (S === st) { updateSaved(); requestLook(); }
+      if (S.two) findParts(st);
     }
   } catch (e) {
     console.warn("Cabinet detection failed:", e);
@@ -606,7 +638,7 @@ async function autoDetect() {
   } finally {
     st.detecting = false;
     if (S === st) { $("busy").hidden = true; updateHint(); }
-    updatePhotos();
+    updatePhotos(); updateLook();
   }
 }
 
@@ -732,9 +764,9 @@ function finishInside(i, fin) {
 
 // Snap the outline to the photo's own edges (colour-guided filter): the AI answers at a lower
 // resolution and its edge can sit a few pixels off, which leaves rims of old finish or jagged lines.
-// Returns a soft 0..1 coverage per pixel.
-function snapEdges(core) {
-  const { w, h, orig } = S, n = w * h, r = Math.max(4, Math.round(Math.max(w, h) / 220)), eps = 1e-3;
+// Returns a soft 0..1 coverage per pixel. r (pixels) is the reach; pass the whole photo's when S is a crop.
+function snapEdges(core, r = Math.max(4, Math.round(Math.max(S.w, S.h) / 220))) {
+  const { w, h, orig } = S, n = w * h, eps = 1e-3;
   const R = new Float32Array(n), G = new Float32Array(n), B = new Float32Array(n), P = Float32Array.from(core);
   for (let i = 0, p = 0; i < n; i++, p += 4) { R[i] = orig[p] / 255; G[i] = orig[p + 1] / 255; B[i] = orig[p + 2] / 255; }
   const bl = a => boxBlur(a, w, h, r), prod = (a, b) => { const o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = a[i] * b[i]; return o; };
@@ -789,11 +821,16 @@ function addUsedRender() {
 }
 const rendersLeft = () => Math.max(0, MAX_RENDERS - Math.max(usedRenders(), G.count));
 
+// New colours picked in the last moment; those still in the look then are rendered (in two-tone, picking
+// another part's colour meanwhile doesn't drop the first one)
+const waiting = new Set();
 function schedulePaint(c) {
-  clearTimeout(dwellTimer);
   if (!CONFIG.detectUrl || !S.autoFound || S.renders[c.num] || G.pending.has(c.num) || G.saved.includes(c)) { requestPaint(c); return; }
-  dwellTimer = setTimeout(() => { if (S.color && S.color.num === c.num) requestPaint(c); }, DWELL_MS);
+  waiting.add(c); clearTimeout(dwellTimer);
+  dwellTimer = setTimeout(() => { for (const x of waiting) if (lookColours().includes(x)) requestPaint(x); waiting.clear(); }, DWELL_MS);
 }
+// Every colour the look shows gets its photo-real render (one colour, or each part's in two-tone)
+function requestLook() { for (const c of lookColours()) requestPaint(c); }
 
 // A colour option counts once toward the limit and is rendered on every angle
 function requestPaint(c) {
@@ -830,7 +867,7 @@ async function paintFor(st, c) {
     if (!px) throw new Error("colour render didn't line up with the photo");
     st.renders[c.num] = withState(st, () => correctRender(px, c));
     if (G.pending.has(c.num)) { G.pending.delete(c.num); G.saved.push(c); }
-    if (S === st && S.color.num === c.num) render();
+    if (S === st && coloursHere().includes(c)) render();
   } catch (e) {
     console.warn("Photo-real render failed:", e); // the instant preview stays
   } finally {
@@ -912,12 +949,11 @@ function renderAlign(st, px, cab) {
 
 // Small picture of the customer's own kitchen in a saved colour, for the "Your colours" strip
 function makeThumb(c) {
-  const keep = S.color;
-  S.color = c; buildLut(); draw();
+  draw([c, c, c]);
   const k = 220 / Math.max(S.w, S.h), t = document.createElement("canvas");
   t.width = Math.round(S.w * k); t.height = Math.round(S.h * k);
   t.getContext("2d").drawImage(after, 0, 0, t.width, t.height);
-  S.color = keep; buildLut(); draw();
+  draw();
   return t.toDataURL("image/jpeg", 0.8);
 }
 
@@ -947,7 +983,7 @@ function updateSaved() {
   }
 }
 
-function updateBadge() { $("hd").hidden = !(S.color && S.renderPending && S.renderPending.has(S.color.num)); }
+function updateBadge() { $("hd").hidden = !(S.color && S.renderPending && coloursHere().some(c => S.renderPending.has(c.num))); }
 
 // Keep the AI's light and detail; shift its colour so the cabinets average to the exact chip hue, and
 // anchor brightness so the best-lit cabinet faces sit near the chip's lightness
@@ -1117,8 +1153,233 @@ function keepRegions(mask, value, minSize) {
   }
 }
 
+/* ---------- two-tone ---------- */
+// Two-tone gives each part of the kitchen its own colour. Once the customer turns it on, the AI paints each
+// photo's uppers, lowers and island in a marker colour each (one extra pass per photo); that only splits the
+// cabinets already found into parts. Each part then shows its own colour's photo-real render, so any mix of
+// the customer's photo-real colours is photo-real too, and costs nothing more.
+const PARTS = ["Uppers", "Lowers", "Island"];
+const MARKS = [240, 120, 300]; // marker hue per part: uppers blue, lowers green, island magenta
+let partsStarted = false;      // the first parts found start the look off (see startLook)
+
+// The colour of each part on this photo. One colour, or this photo's parts aren't known: S.color everywhere
+function curLook() { return S.two && S.parts ? S.look : [S.color, S.color, S.color]; }
+// The colours this photo shows now
+function coloursHere() { const l = curLook(); return [...new Set(S.two && S.parts ? l.filter((c, k) => S.parts.has[k]) : l)]; }
+const partsKnown = () => photos.some(st => st.parts);
+// Which parts any of the customer's photos show
+function partsShown() { return [0, 1, 2].map(k => photos.some(st => st.parts && st.parts.has[k])); }
+// The colours the look needs, on any photo; each gets its photo-real render
+function lookColours() {
+  if (!S.two || !partsKnown()) return [S.color];
+  const has = partsShown();
+  return [...new Set(S.look.filter((c, k) => has[k]))];
+}
+
+function setTwoTone(on) {
+  S.two = on;
+  if (on) {
+    if (!S.look) S.look = [S.color, S.color, S.color];
+    for (const st of photos) findParts(st);
+    if (partsKnown()) S.color = S.look[S.part];
+  }
+  showColour();
+}
+function pickPart(k) { S.part = k; S.color = S.look[k]; showColour(); flash(k); }
+// The part just tapped lights up for a moment (the rest of the photo dims), so it's clear which cabinets
+// it covers (tall pantry cabinets go with the uppers, for instance)
+let flashPart = -1, flashTimer = 0;
+function flash(k) {
+  flashPart = k; render(); clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { flashPart = -1; render(); }, 900);
+}
+
+// When the first parts come in, two-tone starts on the island (or the lowers, without one). If the look is
+// still one colour and another of the customer's colours is already photo-real, the one that differs most
+// in lightness goes on as the accent, so a two-tone look shows at once and costs nothing
+function startLook() {
+  partsStarted = true;
+  const has = partsShown(), cur = S.look[0], L = c => rgbToLab(...hexRgb(c.hex))[0];
+  S.part = has[2] ? 2 : has[1] ? 1 : 0;
+  if (S.part && S.look.every(c => c === cur)) {
+    const alt = G.saved.filter(c => c !== cur).sort((a, b) => Math.abs(L(b) - L(cur)) - Math.abs(L(a) - L(cur)))[0];
+    if (alt && Math.abs(L(alt) - L(cur)) > 20) S.look = S.part === 2 ? [cur, cur, alt] : [cur, alt, alt];
+  }
+  S.color = S.look[S.part];
+}
+
+// The One colour / Two-tone switch and, in two-tone, a button per part showing its colour
+function updateLook() {
+  $("look").hidden = !AUTO || !photos.some(st => st.autoFound);
+  document.querySelectorAll("[data-two]").forEach(b => b.setAttribute("aria-pressed", (b.dataset.two === "1") === !!S.two));
+  const known = S.two && partsKnown();
+  $("curLabel").textContent = known ? `${PARTS[S.part]} colour` : "Your colour";
+  $("quoteBtn").textContent = S.two ? "Get a free quote for this look" : "Get a free quote in this colour";
+  const box = $("parts");
+  box.hidden = !S.two; box.textContent = "";
+  if (!S.two) return;
+  if (!known) {
+    const p = document.createElement("p");
+    p.textContent = photos.some(st => st.partsBusy) ? "Finding your uppers, lowers and island…" : "Two-tone isn't available for these photos.";
+    box.append(p); return;
+  }
+  const has = partsShown();
+  PARTS.forEach((name, k) => {
+    if (!has[k]) return;
+    const here = !S.parts || S.parts.has[k], b = document.createElement("button");
+    b.type = "button"; b.className = here ? "part" : "part absent";
+    b.setAttribute("aria-pressed", k === S.part);
+    b.title = here ? `Pick a colour for the ${name.toLowerCase()}` : `${name}: not in this photo`;
+    const chip = document.createElement("i"), t = document.createElement("span"), nm = document.createElement("b"), cn = document.createElement("small");
+    chip.style.background = S.look[k].hex; nm.textContent = name; cn.textContent = S.look[k].name;
+    t.append(nm, cn); b.append(chip, t);
+    b.onclick = () => pickPart(k);
+    box.append(b);
+  });
+}
+
+// Ask the AI where this photo's uppers, lowers and island are (once per photo, only in two-tone)
+async function findParts(st) {
+  if (!st.autoFound || !st.pad || st.parts || st.partsBusy || st.partsFailed) return;
+  st.partsBusy = true; st.partsDown = false;
+  if (S === st) updateHint();
+  updateLook(); updatePhotos();
+  let answered = false;
+  try {
+    // A shifted or redrawn answer is turned down in applyParts; one more try usually comes back clean
+    for (let attempt = 0; attempt < 2 && !st.parts; attempt++) {
+      const data = await callAI({ image: st.pad.image, aspect: st.pad.aspect, mode: "parts" });
+      if (!photos.includes(st)) return;
+      const marked = await st.pad.unpad(data.image);
+      if (!photos.includes(st)) return;
+      answered = true;
+      withState(st, () => applyParts(marked));
+    }
+  } catch (e) {
+    console.warn("Finding the parts failed:", e); // busy or a limit: turning two-tone on again tries again
+  } finally {
+    st.partsBusy = false;
+    if (photos.includes(st)) {
+      if (!st.parts) { if (answered) st.partsFailed = true; else st.partsDown = true; }
+      if (st.parts && S.two && !partsStarted) { startLook(); if (S === st) flash(S.part); }
+      showColour(); updatePhotos();
+    }
+  }
+}
+
+// The AI's parts answer. Each cabinet pixel takes the part whose marker colour it was painted; pixels it
+// didn't mark (glass, a missed panel, specks) take the nearest marked part, along the cabinets first. Where
+// two parts meet, the line is snapped to the photo's own edges, like the cabinet outline.
+function applyParts(ed) {
+  const { w, h, orig, aiBase, aiOK } = S, n = aiBase.length;
+  const align = renderAlign(S, ed);
+  if (align < ALIGN_MIN) { console.info(`Parts: edge alignment ${align.toFixed(2)}, not used`); return; }
+  const part = new Uint8Array(n).fill(3), count = [0, 0, 0]; // 3: not known yet
+  let cab = 0;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    if (!aiBase[i]) continue;
+    cab++;
+    const k = marker(ed[p], ed[p + 1], ed[p + 2], orig[p], orig[p + 1], orig[p + 2]);
+    if (k < 3) { part[i] = k; count[k]++; }
+  }
+  // Specks (a reflection, a stray brush mark) and parts too small to matter don't count
+  const seen = new Uint8Array(n), stack = new Int32Array(n), region = [];
+  for (let s = 0; s < n; s++) {
+    const k = part[s];
+    if (k === 3 || seen[s]) continue;
+    let sp = 0; stack[sp++] = s; seen[s] = 1; region.length = 0;
+    while (sp) {
+      const i = stack[--sp], x = i % w; region.push(i);
+      if (x > 0 && !seen[i - 1] && part[i - 1] === k) { seen[i - 1] = 1; stack[sp++] = i - 1; }
+      if (x < w - 1 && !seen[i + 1] && part[i + 1] === k) { seen[i + 1] = 1; stack[sp++] = i + 1; }
+      if (i >= w && !seen[i - w] && part[i - w] === k) { seen[i - w] = 1; stack[sp++] = i - w; }
+      if (i + w < n && !seen[i + w] && part[i + w] === k) { seen[i + w] = 1; stack[sp++] = i + w; }
+    }
+    if (region.length < n * 0.001) { for (const i of region) part[i] = 3; count[k] -= region.length; }
+  }
+  const has = count.map(c => c >= cab * 0.02);
+  if (!has.every((x, k) => x || !count[k])) for (let i = 0; i < n; i++) if (part[i] < 3 && !has[part[i]]) part[i] = 3;
+  for (let k = 0; k < 3; k++) if (!has[k]) count[k] = 0;
+  console.info(`Parts: ${PARTS.map((p, k) => `${p} ${(100 * count[k] / Math.max(cab, 1)).toFixed(0)}%`).join(", ")} of the cabinets`);
+  if (count[0] + count[1] + count[2] < cab * 0.3) return; // the AI hardly marked anything
+  // Unmarked pixels take the nearest marked part: along the cabinets first, then anywhere
+  const queue = new Int32Array(n);
+  for (const inside of [true, false]) {
+    let head = 0, tail = 0;
+    for (let i = 0; i < n; i++) if (part[i] < 3) queue[tail++] = i;
+    while (head < tail) {
+      const i = queue[head++], x = i % w, k = part[i];
+      if (x > 0 && part[i - 1] === 3 && (!inside || aiOK[i - 1])) { part[i - 1] = k; queue[tail++] = i - 1; }
+      if (x < w - 1 && part[i + 1] === 3 && (!inside || aiOK[i + 1])) { part[i + 1] = k; queue[tail++] = i + 1; }
+      if (i >= w && part[i - w] === 3 && (!inside || aiOK[i - w])) { part[i - w] = k; queue[tail++] = i - w; }
+      if (i + w < n && part[i + w] === 3 && (!inside || aiOK[i + w])) { part[i + w] = k; queue[tail++] = i + w; }
+    }
+  }
+  // Per pixel: its part (a), the part beside it (b) and how much of b to blend in (w, 0-255). Where two parts
+  // meet inside the cabinets, the line follows the photo's own edge like the cabinet outline does (the AI's
+  // line can sit a few pixels off). That's slow, so it's done per pair of parts that meet, in a box around
+  // where they meet. Lines outside the cabinets don't matter (and mustn't pull at a cabinet's own edge).
+  const a = part, b = part.slice(), wt = new Uint8Array(n);
+  const boxes = [[w, h, -1, -1], [w, h, -1, -1], [w, h, -1, -1]]; // uppers-lowers, uppers-island, lowers-island
+  for (let i = 0; i < n; i++) {
+    if (!aiOK[i]) continue;
+    const x = i % w, k = part[i], kr = x < w - 1 ? part[i + 1] : k, kd = i + w < n ? part[i + w] : k;
+    if (kr === k && kd === k) continue;
+    const y = (i / w) | 0;
+    for (const l of [kr, kd]) if (l !== k) {
+      const B = boxes[k + l - 1];
+      if (x < B[0]) B[0] = x; if (y < B[1]) B[1] = y; if (x > B[2]) B[2] = x; if (y > B[3]) B[3] = y;
+    }
+  }
+  // Room around the lines for the filter's reach (3r)
+  const r = Math.max(4, Math.round(Math.max(w, h) / 220)), mg = 3 * r + 4;
+  boxes.forEach(([x0, y0, x1, y1], pair) => {
+    if (x1 < 0) return;
+    const p = pair < 2 ? 0 : 1, q = pair ? 2 : 1;
+    const bx = Math.max(0, x0 - mg), by = Math.max(0, y0 - mg), cw = Math.min(w, x1 + mg + 1) - bx, ch = Math.min(h, y1 + mg + 1) - by;
+    const co = new Uint8ClampedArray(cw * ch * 4), ind = new Uint8Array(cw * ch), line = new Float32Array(cw * ch);
+    for (let y = 0; y < ch; y++) {
+      const s = (y + by) * w + bx;
+      co.set(orig.subarray(s * 4, (s + cw) * 4), y * cw * 4);
+      for (let x = 0; x < cw; x++) {
+        const i = s + x, k = part[i];
+        ind[y * cw + x] = k === p ? 1 : 0;
+        if (aiOK[i] && (k === p || k === q) && ((x < cw - 1 && part[i + 1] === p + q - k) || (y < ch - 1 && part[i + w] === p + q - k))) line[y * cw + x] = 1;
+      }
+    }
+    const near = boxBlur(line, cw, ch, r + 2), soft = withState({ w: cw, h: ch, orig: co }, () => snapEdges(ind, r));
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+      const j = y * cw + x, i = (y + by) * w + x + bx, s = soft[j];
+      if (near[j] <= 0 || (part[i] !== p && part[i] !== q)) continue;
+      a[i] = s >= 0.5 ? p : q; b[i] = s >= 0.5 ? q : p; wt[i] = Math.round(255 * Math.min(s, 1 - s));
+    }
+  });
+  S.parts = { a, b, w: wt, has };
+}
+
+// Which part's marker colour a pixel was painted in (3: none). It must be strongly coloured, near one
+// marker's hue and clearly nearer to it than to the others, and repainted (not a blue cabinet left as it was)
+function marker(r, g, b, r0, g0, b0) {
+  const hi = Math.max(r, g, b), c = hi - Math.min(r, g, b);
+  if (c < 30 || c < hi * 0.45) return 3;
+  const hue = hueOf(r, g, b);
+  let k = 3, d1 = 360, d2 = 360;
+  for (let j = 0; j < 3; j++) { const d = hueGap(hue, MARKS[j]); if (d < d1) { d2 = d1; d1 = d; k = j; } else if (d < d2) d2 = d; }
+  if (d1 > 40 || d2 - d1 < 15) return 3;
+  const c0 = Math.max(r0, g0, b0) - Math.min(r0, g0, b0);
+  return c0 > c * 0.5 && hueGap(hueOf(r0, g0, b0), hue) < 40 ? 3 : k;
+}
+function hueOf(r, g, b) {
+  const hi = Math.max(r, g, b), c = hi - Math.min(r, g, b);
+  if (!c) return 0;
+  const h = hi === r ? (g - b) / c : hi === g ? (b - r) / c + 2 : (r - g) / c + 4;
+  return (h * 60 + 360) % 360;
+}
+const hueGap = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
+
 $("restart").onclick = () => {
-  photos.length = 0; G.saved.length = 0; G.pending.clear();
+  // A new kitchen starts in one colour (two-tone's extra AI pass only runs once it's asked for)
+  photos.length = 0; G.saved.length = 0; G.pending.clear(); partsStarted = false; S.two = false; S.look = null;
   fileInput.value = ""; $("editor").hidden = true; $("start").hidden = false; fileInput.click();
 };
 
@@ -1188,59 +1449,87 @@ function maskChanged() {
 }
 
 /* ---------- painting ---------- */
-let lut = null; // lightness (0..1000) -> rgb for the current colour
-function buildLut() {
-  const [, a, b] = rgbToLab(...hexRgb(S.color.hex));
-  lut = new Uint8Array(1001 * 3);
-  for (let i = 0; i <= 1000; i++) { const c = labToRgb(i / 10, a, b); lut.set(c, i * 3); }
-  const t = rgbToLab(...hexRgb(S.color.hex));
-  S.tL = t[0];
-  S.tY = fInv((t[0] + 16) / 116);
+// Per colour: lightness (0..1000) -> rgb for the quick preview, and the chip's luminance
+const LUTS = new Map();
+function lutFor(c) {
+  let v = LUTS.get(c.num);
+  if (!v) {
+    const [L, a, b] = rgbToLab(...hexRgb(c.hex)), lut = new Uint8Array(1001 * 3);
+    for (let i = 0; i <= 1000; i++) lut.set(labToRgb(i / 10, a, b), i * 3);
+    LUTS.set(c.num, v = { lut, tY: fInv((L + 16) / 116) });
+  }
+  return v;
 }
 
 let raf = 0;
 function render() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); }
-function draw() {
-  if (!outImg || !S.color) return;
-  const { orig, alpha, Yd, Ylight, yMean, tY, w, h } = S, out = outImg.data, n = w * h;
+// look: the colour of each part (uppers, lowers, island); the same colour three times paints them all alike.
+// Without one: the customer's look, with a part they just tapped lit up
+function draw(look) {
+  const lit = look ? -1 : flashPart;
+  look = look || curLook();
+  if (!outImg || !look[0]) return;
+  const { orig, alpha, Yd, Ylight, yMean, w, h, aiOK, aiY, aiMean, hw, showSel } = S, out = outImg.data, n = w * h;
   out.set(orig);
-  const real = S.renders && S.renders[S.color.num];
-  // The quick preview borrows any photo-real render's map of what to leave alone (glass, open shelves)
-  const known = !real && S.renders && Object.values(S.renders)[0];
-  for (let i = 0; i < n; i++) {
-    let al = alpha[i];
-    if (al <= 0) continue;
-    if (real && S.aiOK[i]) {
-      if (S.hw && S.hw[i] === 1) continue; // keep the original handles and knobs (wood-coloured ones: the render's alpha says)
-      const p = i * 4, q = i * 4;
-      const ak = al * real[q + 3] / 255;
-      if (ak <= 0) continue;
-      let r = real[q], g = real[q + 1], b = real[q + 2];
-      if (S.showSel) { r = r * 0.55 + 255 * 0.45; g = g * 0.55 + 60 * 0.45; b = b * 0.55 + 140 * 0.45; }
-      out[p] = orig[p] + (r - orig[p]) * ak; out[p + 1] = orig[p + 1] + (g - orig[p + 1]) * ak; out[p + 2] = orig[p + 2] + (b - orig[p + 2]) * ak;
-      continue;
+  // Each colour shows its photo-real render. Until it has one, the quick preview, which borrows any
+  // photo-real render's map of what to leave alone (glass, open shelves)
+  const first = S.renders && Object.values(S.renders)[0];
+  const paint = look.map(c => { const real = S.renders && S.renders[c.num]; return { real, known: !real && first, ...lutFor(c) }; });
+  // Two-tone: each pixel takes its part's colour, and where two parts meet, a blend of both
+  const parts = S.two && S.parts, split = parts && (look[1] !== look[0] || look[2] !== look[0]);
+  const px = new Float64Array(3), qx = new Float64Array(3);
+  // One pixel in one colour (P); the result goes in o
+  const shade = (i, al, P, o) => {
+    const p = i * 4;
+    o[0] = orig[p]; o[1] = orig[p + 1]; o[2] = orig[p + 2];
+    let r, g, b;
+    if (P.real && aiOK[i]) {
+      if (hw && hw[i] === 1) return; // keep the original handles and knobs (wood-coloured ones: the render's alpha says)
+      const ak = al * P.real[p + 3] / 255;
+      if (ak <= 0) return;
+      r = P.real[p]; g = P.real[p + 1]; b = P.real[p + 2]; al = ak;
+    } else {
+      if (P.known && aiOK[i]) { if (hw && hw[i] === 1) return; al *= P.known[p + 3] / 255; if (al <= 0) return; }
+      // Final-coat look: an even, solid colour. Only the room's broad lighting and a softened hint of the
+      // door profiles carry over; the old finish's grain and blotches don't.
+      const light = Math.pow(Math.min(2.5, Math.max(0.15, Ylight[i] / yMean)), 0.75);
+      // Keep strong shading (panel bevels, frames, shadow lines) and drop weak texture (grain, blotches):
+      // changes under ~12% from the surrounding light are flattened, bigger ones pass through
+      const d = Math.log(Math.max(1e-4, Yd[i]) / Math.max(1e-4, Ylight[i]));
+      const profile = Math.min(1.7, Math.max(0.3, Math.exp(Math.sign(d) * Math.max(0, Math.abs(d) - 0.12))));
+      // Lit faces brighten more gently than shadows darken, so deep colours (navy, black) stay deep
+      let ratio = Math.min(2.5, Math.max(0.15, aiOK && aiOK[i] ? aiY[i] / aiMean : light * profile));
+      if (ratio > 1) ratio = Math.pow(ratio, 0.6);
+      const tY = P.tY;
+      let yN = tY * ratio;
+      // Roll off highlights softly so light colours don't blow out to flat white
+      if (yN > tY) { const room = Math.max(0.04, (1 - tY) * 0.9); yN = tY + room * (1 - Math.exp(-(yN - tY) / room)); }
+      const L = yN > 0.008856 ? 116 * Math.cbrt(yN) - 16 : 903.3 * yN;
+      const k = Math.round(Math.max(0, Math.min(100, L)) * 10) * 3;
+      r = P.lut[k]; g = P.lut[k + 1]; b = P.lut[k + 2];
     }
-    if (known && S.aiOK[i]) { if (S.hw && S.hw[i] === 1) continue; al *= known[i * 4 + 3] / 255; if (al <= 0) continue; }
-    // Final-coat look: an even, solid colour. Only the room's broad lighting and a softened hint of the
-    // door profiles carry over; the old finish's grain and blotches don't.
-    const light = Math.pow(Math.min(2.5, Math.max(0.15, Ylight[i] / yMean)), 0.75);
-    // Keep strong shading (panel bevels, frames, shadow lines) and drop weak texture (grain, blotches):
-    // changes under ~12% from the surrounding light are flattened, bigger ones pass through
-    const d = Math.log(Math.max(1e-4, Yd[i]) / Math.max(1e-4, Ylight[i]));
-    const profile = Math.min(1.7, Math.max(0.3, Math.exp(Math.sign(d) * Math.max(0, Math.abs(d) - 0.12))));
-    // Lit faces brighten more gently than shadows darken, so deep colours (navy, black) stay deep
-    let ratio = Math.min(2.5, Math.max(0.15, S.aiOK && S.aiOK[i] ? S.aiY[i] / S.aiMean : light * profile));
-    if (ratio > 1) ratio = Math.pow(ratio, 0.6);
-    let yN = tY * ratio;
-    // Roll off highlights softly so light colours don't blow out to flat white
-    if (yN > tY) { const room = Math.max(0.04, (1 - tY) * 0.9); yN = tY + room * (1 - Math.exp(-(yN - tY) / room)); }
-    const L = yN > 0.008856 ? 116 * Math.cbrt(yN) - 16 : 903.3 * yN;
-    const k = Math.round(Math.max(0, Math.min(100, L)) * 10) * 3, p = i * 4;
-    let r = lut[k], g = lut[k + 1], b = lut[k + 2];
-    if (S.showSel) { r = r * 0.55 + 255 * 0.45; g = g * 0.55 + 60 * 0.45; b = b * 0.55 + 140 * 0.45; }
-    out[p] = orig[p] + (r - orig[p]) * al;
-    out[p + 1] = orig[p + 1] + (g - orig[p + 1]) * al;
-    out[p + 2] = orig[p + 2] + (b - orig[p + 2]) * al;
+    if (showSel) { r = r * 0.55 + 255 * 0.45; g = g * 0.55 + 60 * 0.45; b = b * 0.55 + 140 * 0.45; }
+    o[0] = orig[p] + (r - orig[p]) * al; o[1] = orig[p + 1] + (g - orig[p + 1]) * al; o[2] = orig[p + 2] + (b - orig[p + 2]) * al;
+  };
+  for (let i = 0; i < n; i++) {
+    const al = alpha[i];
+    if (al <= 0) continue;
+    if (!split) shade(i, al, paint[0], px);
+    else {
+      const a = parts.a[i], b = parts.b[i], t = parts.w[i] / 255;
+      shade(i, al, paint[a], px);
+      if (t > 0 && look[b] !== look[a]) {
+        shade(i, al, paint[b], qx);
+        for (let k = 0; k < 3; k++) px[k] += (qx[k] - px[k]) * t;
+      }
+    }
+    const p = i * 4;
+    out[p] = px[0]; out[p + 1] = px[1]; out[p + 2] = px[2];
+  }
+  // A part just tapped: everything else dims for a moment
+  if (parts && lit >= 0) for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const d = 0.4 + 0.6 * (parts.a[i] === lit ? alpha[i] : 0);
+    if (d < 1) { out[p] *= d; out[p + 1] *= d; out[p + 2] *= d; }
   }
   actx.putImageData(outImg, 0, 0);
 }
@@ -1331,6 +1620,15 @@ function updateHint() {
   if (S.tool === "erase") return hint("Paint over countertops, handles or walls that shouldn't change.");
   if (S.detecting && botNeedsTap) return hint("One quick check first: tap <b>Verify you are human</b> at the bottom of the page.", true);
   if (S.detecting) return hint("🔍 Finding your cabinets and painting them. This takes about 20 seconds, so hang tight…");
+  if (AUTO && S.autoFound && S.two) {
+    if (S.partsBusy) return hint("🔍 Finding your uppers, lowers and island. This takes about 20 seconds…");
+    if (!S.parts) return hint(S.partsFailed ? "We couldn't tell the uppers, lowers and island apart in this photo, so it shows one colour. Another angle may work." : "Two-tone is busy right now. Tap <b>Two-tone</b> again in a few minutes.", true);
+    const preview = coloursHere().find(c => !S.renders[c.num]);
+    if (preview && rendersLeft() <= 0)
+      return hint(`Showing a quick preview of <b>${preview.name}</b>. You've used your ${MAX_RENDERS} photo-real previews; any mix of <b>Your colours</b> is still photo-real.`);
+    const names = PARTS.filter((p, k) => partsShown()[k]).map(p => `<b>${p}</b>`);
+    return hint(`Two-tone: tap ${names.length > 1 ? names.slice(0, -1).join(", ") + " or " + names[names.length - 1] : names[0]}, then pick its colour.`);
+  }
   if (AUTO && S.autoFound && rendersLeft() <= 0 && !S.renders[S.color.num])
     return hint(`Showing a quick preview of <b>${S.color.name}</b>. You've used your ${MAX_RENDERS} photo-real previews; tap any of <b>Your colours</b> to see them again, or ask us for a free quote.`);
   if (AUTO && S.autoFound) return hint(`Your cabinets are shown in <b>${S.color.name}</b>. Pick any colour to try it.`);
@@ -1366,10 +1664,23 @@ function buildPopular() {
 }
 function pickColor(c) {
   S.color = c;
+  // Two-tone: the colour goes on the part picked (on every part until the parts are known)
+  if (S.two && S.look) S.look = partsKnown() ? S.look.map((x, k) => k === S.part ? c : x) : [c, c, c];
+  showColour();
+  if (outImg) schedulePaint(c);
+}
+function showColour() {
+  const c = S.color;
   document.querySelectorAll(".sw").forEach(b => b.setAttribute("aria-pressed", b.dataset.num === c.num));
   $("curChip").style.background = c.hex; $("curName").textContent = c.name; $("curNum").textContent = "SW " + c.num;
-  buildLut(); render(); if (outImg) { updateHint(); updateBadge(); updateSaved(); schedulePaint(c); }
+  render(); updateLook(); if (outImg) { updateHint(); updateBadge(); updateSaved(); }
 }
+document.querySelectorAll("[data-two]").forEach(b => b.onclick = () => setTwoTone(b.dataset.two === "1"));
+// The One colour / Two-tone switch: at the top of the colour panel on bigger screens, right above the quick
+// colours on phones (where the panel is further down the page)
+const wideScreen = matchMedia("(min-width: 861px)");
+function placeLook() { if (wideScreen.matches) document.querySelector(".palette").prepend($("look")); else $("quick").before($("look")); }
+wideScreen.addEventListener("change", placeLook); placeLook();
 $("search").addEventListener("input", () => {
   const q = $("search").value.trim().toLowerCase().replace(/^sw\s*/, ""), box = $("results");
   box.textContent = ""; $("resultsNote").textContent = "";
@@ -1384,24 +1695,41 @@ $("search").addEventListener("input", () => {
 function finalCanvas() {
   const c = document.createElement("canvas"); c.width = S.w; c.height = S.h;
   const x = c.getContext("2d");
-  const keep = S.showSel; S.showSel = false; draw(); S.showSel = keep;
+  const keep = S.showSel; S.showSel = false; draw(curLook()); S.showSel = keep;
   x.drawImage(after, 0, 0);
   if (keep) render();
-  const fs = Math.max(14, Math.round(S.w / 45)), pad = Math.round(fs * 0.6);
-  const label = `SW ${S.color.num} ${S.color.name}` + (CONFIG.watermark && CONFIG.brand ? `  ·  ${CONFIG.brand}` : "");
+  const fs = Math.max(14, Math.round(S.w / 45)), pad = Math.round(fs * 0.6), lh = Math.round(fs * 1.3);
+  // One line per colour (two-tone: which parts it's on), the brand after the last
+  const lines = lookLines().map(l => l.text);
+  if (CONFIG.watermark && CONFIG.brand) lines[lines.length - 1] += `  ·  ${CONFIG.brand}`;
   x.font = `600 ${fs}px -apple-system, Segoe UI, Roboto, sans-serif`;
-  const tw = x.measureText(label).width;
+  const tw = Math.max(...lines.map(t => x.measureText(t).width)), th = fs + lh * (lines.length - 1);
   x.fillStyle = "rgba(0,0,0,.55)";
-  x.fillRect(S.w - tw - pad * 3, S.h - fs - pad * 3, tw + pad * 2, fs + pad * 2);
+  x.fillRect(S.w - tw - pad * 3, S.h - th - pad * 3, tw + pad * 2, th + pad * 2);
   x.fillStyle = "#fff"; x.textBaseline = "top";
-  x.fillText(label, S.w - tw - pad * 2, S.h - fs - pad * 2);
+  lines.forEach((t, k) => x.fillText(t, S.w - tw - pad * 2, S.h - th - pad * 2 + k * lh));
   return c;
+}
+// The look in words, one line per colour: "SW 7006 Extra White", or in two-tone e.g.
+// "Uppers & lowers SW 7006 Extra White" and "Island SW 6244 Naval"
+function lookLines() {
+  const name = c => `SW ${c.num} ${c.name}`;
+  if (!S.two || !partsKnown()) return [{ c: S.color, text: name(S.color) }];
+  const has = partsShown(), groups = [];
+  PARTS.forEach((p, k) => {
+    if (!has[k]) return;
+    const same = groups.find(g => g.c === S.look[k]);
+    if (same) same.parts.push(p.toLowerCase()); else groups.push({ c: S.look[k], parts: [p] });
+  });
+  if (groups.length === 1) return [{ c: groups[0].c, text: name(groups[0].c) }];
+  return groups.map(g => ({ c: g.c, text: `${g.parts.join(" & ")} ${name(g.c)}` }));
 }
 $("download").onclick = () => {
   finalCanvas().toBlob(b => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(b);
-    a.download = `my-cabinets-SW-${S.color.num}-${S.color.name.replace(/\W+/g, "-")}.jpg`;
+    const lines = lookLines();
+    a.download = `my-cabinets-${lines.length > 1 ? "two-tone-" : ""}${lines.map(l => `SW-${l.c.num}-${l.c.name}`).join("-").replace(/\W+/g, "-")}.jpg`;
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }, "image/jpeg", 0.9);
@@ -1409,13 +1737,21 @@ $("download").onclick = () => {
 
 /* ---------- quote request ---------- */
 const dlg = $("quote");
+// The look for the quote: "SW 7006 Extra White", or "Two-tone: Uppers & lowers SW 7006 Extra White, Island SW 6244 Naval"
+function lookLabel() {
+  const lines = lookLines(), text = lines.map(l => l.text).join(", ");
+  return lines.length > 1 ? "Two-tone: " + text : text;
+}
 $("quoteBtn").onclick = () => {
-  const label = `SW ${S.color.num} ${S.color.name}`;
   if (!CONFIG.quoteWebhook && CONFIG.quoteUrl) {
-    const u = new URL(CONFIG.quoteUrl, location.href); u.searchParams.set("color", label);
+    const u = new URL(CONFIG.quoteUrl, location.href); u.searchParams.set("color", lookLabel());
     window.open(u.href, "_top"); return;
   }
-  $("qChip").style.background = S.color.hex; $("qColor").textContent = label;
+  const box = $("qPicked"); box.textContent = "";
+  for (const l of lookLines()) {
+    const row = document.createElement("div"), chip = document.createElement("i"), t = document.createElement("span");
+    chip.style.background = l.c.hex; t.textContent = l.text; row.append(chip, t); box.append(row);
+  }
   $("quoteFields").hidden = false; $("quoteDone").hidden = true;
   dlg.showModal();
 };
@@ -1425,7 +1761,7 @@ $("quoteForm").addEventListener("submit", async ev => {
   const fd = new FormData($("quoteForm"));
   const lead = {
     name: fd.get("name"), phone: fd.get("phone"), email: fd.get("email"), city: fd.get("city"), notes: fd.get("notes"),
-    color: `SW ${S.color.num} ${S.color.name}`, color_hex: S.color.hex, source: "Cabinet colour visualizer", page: document.referrer || location.href
+    color: lookLabel(), color_hex: lookLines().map(l => l.c.hex).join(", "), source: "Cabinet colour visualizer", page: document.referrer || location.href
   };
   if (fd.get("attach")) {
     const c = finalCanvas(), small = document.createElement("canvas"), k = Math.min(1, 900 / Math.max(c.width, c.height));

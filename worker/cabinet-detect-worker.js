@@ -5,6 +5,8 @@
 // in flat magenta, and (at the same time) in an even grey final coat. It returns
 // {image, grey, seconds}: the page treats every magenta pixel as cabinet, takes light and shadow from
 // the grey coat, and paints the real Sherwin-Williams colour there itself.
+// {mode: "paint", color} asks for the cabinets in that real colour instead, and {mode: "parts"} (two-tone
+// only) for the uppers, lowers and island in three marker colours, which the page uses to tell them apart.
 // The key never reaches the browser.
 //
 // Bot check (Cloudflare Turnstile): when the TURNSTILE_SECRET secret is set, the page must first send
@@ -25,6 +27,7 @@ const ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9"
 const MAX_IMAGE_CHARS = 4_000_000;      // ~3 MB JPEG; the page sends ~2048px photos (~600 KB)
 const FIND_LIMIT = 10;                  // photo uploads per visitor per hour
 const PAINT_LIMIT = 18;                 // colour renders per visitor per day (page allows 5 colours x up to 3 angles, plus retries)
+const PARTS_LIMIT = 10;                 // two-tone part finds per visitor per hour (one per photo, plus retries)
 const HELLO_LIMIT = 30;                 // bot checks per visitor per hour
 const SESSION_MS = 3 * 60 * 60 * 1000;  // a passed bot check is good for 3 hours
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
@@ -47,6 +50,23 @@ solid, medium neutral grey (#808080) satin paint: every cabinet door, drawer fro
 end panel, face frame, filler, toe kick, crown moulding on cabinets, and the sides of any island or
 peninsula cabinetry. Fully hide the old finish and wood grain. Keep the real lighting, shadows,
 panel profiles and edges of the cabinets so it looks like a real photo.
+
+Do NOT change anything else, not even slightly: keep walls, ceiling, countertops, backsplash, tile,
+appliances, range hood, sink, faucet, windows, floor, lights, handles and knobs, glass panes in doors,
+and every object exactly as they are. Keep the same framing, size and perspective; do not crop,
+zoom, straighten or re-light the photo. Grey borders around the photo must stay grey.`;
+
+// Two-tone only (asked for once the customer turns it on): each cabinet in a marker colour for its part of
+// the kitchen. The page only uses it to split the cabinets it already found into uppers, lowers and island
+const PARTS_PROMPT = `Edit this photo for a two-tone cabinet-painting preview.
+Repaint ONLY the cabinetry, each cabinet in one flat, solid, fully saturated marker colour by where it is:
+- pure blue (#0000FF): upper cabinets. Wall cabinets above the countertop, cabinets above the fridge or
+  range hood, and tall floor-to-ceiling cabinets (pantry, fridge or oven towers), with their crown moulding.
+- pure green (#00FF00): lower cabinets along the walls, under the countertop. Their doors, drawer fronts,
+  cabinet boxes, end panels, fillers and toe kicks.
+- pure magenta (#FF00FF): island and peninsula cabinets. Every door, drawer front, panel and side of a
+  freestanding island, or of a peninsula that sticks out into the room.
+Cover each cabinet surface edge to edge.
 
 Do NOT change anything else, not even slightly: keep walls, ceiling, countertops, backsplash, tile,
 appliances, range hood, sink, faucet, windows, floor, lights, handles and knobs, glass panes in doors,
@@ -189,9 +209,15 @@ export default {
 
     const t0 = Date.now();
     // Limits per visitor (IP) and, with the bot check on, per session too
-    const kind = body.mode === "paint" ? "p:" : "f:", limit = body.mode === "paint" ? PAINT_LIMIT : FIND_LIMIT, span = body.mode === "paint" ? DAY : HOUR;
+    const mode = body.mode === "paint" || body.mode === "parts" ? body.mode : "find";
+    const [kind, limit, span] = { find: ["f:", FIND_LIMIT, HOUR], parts: ["g:", PARTS_LIMIT, HOUR], paint: ["p:", PAINT_LIMIT, DAY] }[mode];
     if (rateLimited(kind + ip, limit, span) || (sid && rateLimited(kind + "s:" + sid, limit, span))) {
       return reply({ error: "You've reached today's limit, please try again later" }, 429, origin);
+    }
+    if (mode === "parts") {
+      const marked = await render(env, jpeg, aspect, PARTS_PROMPT);
+      if (marked.error) return reply({ error: marked.error }, 502, origin);
+      return reply({ image: marked.image, model: MODEL, seconds: Math.round((Date.now() - t0) / 100) / 10 }, 200, origin);
     }
     if (body.mode === "paint") {
       const c = body.color || {};
