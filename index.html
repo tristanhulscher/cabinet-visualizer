@@ -275,7 +275,7 @@ const CONFIG = {
   quoteUrl: "",                        // OR a link to your existing quote page (colour is added as ?color=...)
   detectUrl: "https://cabinet-detect.tristanhulscher.workers.dev/", // AI cabinet detection (Cloudflare Worker)
   watermark: true,                     // brand name in the corner of downloaded photos
-  maxSize: 2000                        // longest side photos are scaled to (pixels)
+  maxSize: 1600                        // longest side photos are scaled to (pixels); the AI renders at 2K
 };
 /* =============================================================== */
 
@@ -388,7 +388,7 @@ function setup(img) {
   Object.assign(S, {
     w, h, orig: data, Lb: boxBlur(L, w, h, r1), Ab: boxBlur(A, w, h, r1), Bb: boxBlur(B, w, h, r1),
     Y, Yb: boxBlur(Y, w, h, r2), Yd: boxBlur(Y, w, h, Math.max(1, Math.round(Math.max(w, h) / 480))), mask: new Uint8Array(n), alpha: new Float32Array(n), history: [],
-    aiY: null, aiOK: null, aiSoft: null, aiBase: null, renders: {}, pending: new Set(), paintCount: 0, same: null, hw: null, pad: null, serviceDown: false, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
+    aiY: null, aiOK: null, aiSoft: null, aiBase: null, renders: {}, pending: new Set(), paintCount: 0, hw: null, pad: null, serviceDown: false, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
   });
   outImg = new ImageData(new Uint8ClampedArray(data), w, h);
   $("start").hidden = true; $("editor").hidden = false;
@@ -474,7 +474,10 @@ function applyMagenta(ed, coat) {
   // Cabinets are large connected areas: drop stray specks (reflections in ovens, chrome), and fill
   // pinholes too small to be a knob
   keepRegions(mask, 1, n * 0.002);
+  const before = mask.slice();
   keepRegions(mask, 0, n * 0.00004);
+  // Small holes the AI left unpainted inside a cabinet are usually knobs and pulls
+  S.holes = new Uint8Array(n); for (let i = 0; i < n; i++) S.holes[i] = mask[i] && !before[i] ? 1 : 0;
   let core = mask;
   if (coat) core = growToCoat(core, coat);
   const soft = snapEdges(core);
@@ -495,6 +498,7 @@ function applyMagenta(ed, coat) {
     else if (den[i] > 0.01) { aiY[i] = num[i] / den[i]; aiOK[i] = 1; }
   }
   Object.assign(S, { aiY, aiOK, aiSoft: soft, aiBase: base, aiMean: cnt ? sum / cnt : 0.2 });
+  findHardware(coat);
   pushHistory();
   S.mask = base.slice(); S.autoFound = true;
   maskChanged();
@@ -583,7 +587,6 @@ async function requestPaint(c) {
     if (id !== S.photoId) return;
     const px = await S.pad.unpad(data.image);
     if (id !== S.photoId) return;
-    trackHardware(px);
     S.renders[c.num] = correctRender(px, c);
     if (S.color.num === c.num) render();
   } catch (e) {
@@ -624,17 +627,31 @@ function correctRender(px, c) {
   return out;
 }
 
-// Hardware = small compact spots inside the cabinets that the AI left unchanged in every colour render
-// so far (wood always changes in at least one; knobs and pulls don't). Those keep the photo's own pixels.
-function trackHardware(px) {
-  const { w, h, orig, aiBase } = S, n = w * h;
-  if (!S.same) { S.same = new Uint8Array(n); S.same.fill(1); }
-  for (let i = 0, p = 0; i < n; i++, p += 4) {
-    if (S.same[i] && (Math.abs(px[p] - orig[p]) + Math.abs(px[p + 1] - orig[p + 1]) + Math.abs(px[p + 2] - orig[p + 2])) / 3 >= 28) S.same[i] = 0;
+// Hardware: knobs and pulls are small, compact spots inside a door or drawer whose colour clearly
+// differs from the cabinet finish around them. Found once from the original photo, so they keep their
+// real look whatever colour is picked first (the AI sometimes repaints them, so its renders can't tell us).
+function findHardware(coat) {
+  const { w, h, aiBase, Lb, Ab, Bb } = S, n = w * h, big = Math.max(w, h);
+  const r = Math.max(8, Math.round(big / 60)), cf = Float32Array.from(aiBase);
+  const mul = a => { const o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = a[i] * cf[i]; return o; };
+  const den = boxBlur(cf, w, h, r), mL = boxBlur(mul(Lb), w, h, r), mA = boxBlur(mul(Ab), w, h, r), mB = boxBlur(mul(Bb), w, h, r);
+  // Only well inside the cabinets: the outer edge is trim and shadow, not hardware
+  const inner = boxBlur(cf, w, h, Math.max(4, Math.round(big / 120)));
+  const cand = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (inner[i] < 0.999 || den[i] < 0.05) continue;
+    const dL = Lb[i] - mL[i] / den[i], da = Ab[i] - mA[i] / den[i], db = Bb[i] - mB[i] / den[i];
+    const d = Math.hypot(dL, da * 1.4, db * 1.4), dab = Math.hypot(da, db);
+    // differs in colour (bronze/chrome vs wood), not just a darker patch of the same wood
+    // Best signal: the grey primer-coat render repaints the doors but leaves knobs and pulls alone
+    if (coat) {
+      const p = i * 4, o = S.orig;
+      const same = (Math.abs(coat[p] - o[p]) + Math.abs(coat[p + 1] - o[p + 1]) + Math.abs(coat[p + 2] - o[p + 2])) / 3 < 22;
+      if (same && (d > 10 || S.holes[i])) cand[i] = 1;
+    } else if ((d > 16 || S.holes && S.holes[i] && d > 8) && (dab > 7 || Math.abs(dL) > 35)) cand[i] = 1;
   }
-  const inCab = boxBlur(Float32Array.from(aiBase), w, h, 2), cand = new Uint8Array(n);
-  for (let i = 0; i < n; i++) cand[i] = S.same[i] && inCab[i] > 0.001 ? 1 : 0;
   const hw = new Uint8Array(n), seen = new Uint8Array(n), stack = new Int32Array(n), region = [];
+  const amin = Math.pow(big * 0.006, 2) * 0.5, amax = Math.pow(big * 0.035, 2);
   for (let s = 0; s < n; s++) {
     if (!cand[s] || seen[s]) continue;
     let sp = 0, x0 = w, x1 = 0, y0 = h, y1 = 0, edge = 0, edgeIn = 0;
@@ -648,10 +665,11 @@ function trackHardware(px) {
         else { edge++; if (aiBase[j]) edgeIn++; }
       }
     }
-    const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
-    if (region.length < n * 0.000008 || region.length > n * 0.004) continue;
-    if (Math.max(bw, bh) / Math.min(bw, bh) > 6) continue;   // long seams aren't hardware
-    if (!edge || edgeIn / edge < 0.85) continue;              // must sit inside a door or drawer
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1, area = region.length;
+    if (area < amin || area > amax) continue;                  // knob- or pull-sized
+    if (Math.max(bw, bh) / Math.min(bw, bh) > 2.5) continue;    // compact, not a groove
+    if (area / (bw * bh) < 0.4) continue;                       // solid, not grain or shadow
+    if (!edge || edgeIn / edge < 0.9) continue;                 // surrounded by cabinet
     for (const i of region) hw[i] = 1;
   }
   const grown = boxBlur(Float32Array.from(hw), w, h, 1);
