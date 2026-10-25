@@ -94,6 +94,7 @@
   .slider { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
   .slider input { width: 110px; accent-color: var(--accent); }
   .spacer { flex: 1; }
+  .fix { display: contents; }
 
   /* Palette */
   .palette { background: var(--panel); border-radius: var(--radius); padding: 16px; position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
@@ -159,7 +160,7 @@
 <div class="app" id="app">
   <header>
     <h1 id="title">See your cabinets in a new colour</h1>
-    <p>Upload a photo of your kitchen, tap your cabinets, and try any Sherwin-Williams colour in seconds.</p>
+    <p id="intro">Upload a photo of your kitchen, tap your cabinets, and try any Sherwin-Williams colour in seconds.</p>
   </header>
 
   <!-- Step 1: upload -->
@@ -173,7 +174,7 @@
     </label>
     <div class="tips">
       <div><b>1</b>Stand back and shoot straight on, with the lights on.</div>
-      <div><b>2</b>Tap each cabinet door and drawer to select it.</div>
+      <div id="tip2"><b>2</b>Tap each cabinet door and drawer to select it.</div>
       <div><b>3</b>Tap a colour to see it instantly. Compare before and after.</div>
     </div>
   </section>
@@ -185,6 +186,7 @@
         <canvas id="before"></canvas>
         <canvas id="after"></canvas>
         <div class="cursor" id="cursor" hidden></div>
+        <div class="busy" id="busy" hidden><span class="tag" style="position:static;font-size:15px;padding:8px 16px">🔍 Finding your cabinets…</span></div>
         <div class="divider" id="divider" hidden><span>⇔</span></div>
         <div class="tag" id="tagBefore" style="left:10px" hidden>Before</div>
         <div class="tag" id="tagAfter" style="right:10px" hidden>After</div>
@@ -192,6 +194,7 @@
       <div class="quick" id="quick" aria-label="Popular cabinet colours"></div>
       <div class="hint" id="hint"></div>
       <div class="toolbar">
+        <span class="fix" id="fixTools">
         <div class="seg" role="group" aria-label="Selection tool">
           <button data-tool="wand" aria-pressed="true" title="Tap a cabinet to select it">👆 Tap</button>
           <button data-tool="brush" aria-pressed="false" title="Paint over areas the tap missed">🖌 Brush</button>
@@ -201,8 +204,10 @@
         <label class="slider" id="sizeWrap" hidden>Size <input type="range" id="size" min="4" max="80" value="24"></label>
         <span class="spacer"></span>
         <button class="btn" id="undo" disabled>↶ Undo</button>
-        <button class="btn" id="compare" aria-pressed="false">Before / After</button>
         <button class="btn" id="showSel" aria-pressed="false" title="Highlight what's selected">Show selection</button>
+        </span>
+        <button class="btn" id="compare" aria-pressed="false">Before / After</button>
+        <button class="btn" id="adjust" aria-pressed="false" hidden title="Fix what gets painted">Adjust</button>
         <button class="btn" id="restart">New photo</button>
       </div>
     </div>
@@ -227,6 +232,7 @@
   <footer>
     <p>Colours on screen are a preview only and vary by device and lighting. Always check a physical paint chip before you decide.</p>
     <p>Sherwin-Williams colour names and numbers are trademarks of The Sherwin-Williams Company. <span id="brandFoot"></span></p>
+    <p id="aiNote" hidden>To find your cabinets, a copy of your photo is analysed by Google's Gemini AI. We don't keep your photo unless you send it with a quote request.</p>
   </footer>
 </div>
 
@@ -267,6 +273,7 @@ const CONFIG = {
   // Where quote requests go. Fill in ONE of these:
   quoteWebhook: "",                    // e.g. a HighLevel or Zapier "inbound webhook" URL (form fields are POSTed to it)
   quoteUrl: "",                        // OR a link to your existing quote page (colour is added as ?color=...)
+  detectUrl: "",                       // AI cabinet detection endpoint; empty = customers tap cabinets themselves
   watermark: true,                     // brand name in the corner of downloaded photos
   maxSize: 1400                        // longest side photos are scaled to (pixels)
 };
@@ -275,9 +282,11 @@ const CONFIG = {
 // URL overrides let the same file be reused: index.html?brand=...&accent=%23123456&quoteUrl=...
 (() => {
   const q = new URLSearchParams(location.search);
-  for (const k of ["brand", "accent", "defaultColor", "quoteUrl"]) if (q.get(k)) CONFIG[k] = q.get(k);
+  for (const k of ["brand", "accent", "defaultColor", "quoteUrl", "detectUrl"]) if (q.get(k)) CONFIG[k] = q.get(k);
 })();
 document.documentElement.style.setProperty("--accent", CONFIG.accent);
+// With AI detection the customer never has to select cabinets; the manual tools sit behind "Adjust"
+const AUTO = !!CONFIG.detectUrl;
 document.getElementById("brandFoot").textContent = CONFIG.brand ? `Visualizer by ${CONFIG.brand}.` : "";
 
 const $ = id => document.getElementById(id);
@@ -376,21 +385,193 @@ function setup(img) {
   const r2 = Math.max(2, Math.round(Math.max(w, h) / 260)); // smooth out wood grain for shading
   Object.assign(S, {
     w, h, orig: data, Lb: boxBlur(L, w, h, r1), Ab: boxBlur(A, w, h, r1), Bb: boxBlur(B, w, h, r1),
-    Y, Yb: boxBlur(Y, w, h, r2), mask: new Uint8Array(n), alpha: new Float32Array(n), history: []
+    Y, Yb: boxBlur(Y, w, h, r2), mask: new Uint8Array(n), alpha: new Float32Array(n), history: [],
+    segments: [], photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
   });
   outImg = new ImageData(new Uint8ClampedArray(data), w, h);
   $("start").hidden = true; $("editor").hidden = false;
   if (!S.color) pickColor(BY_NUM[CONFIG.defaultColor] || COLORS[0]);
-  setCompare(false); setTool("wand"); updateUndo(); maskChanged();
+  setCompare(false); setTool("wand"); updateUndo(); maskChanged(); if (AUTO) setAdjusting(false);
   stage.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (CONFIG.detectUrl) autoDetect();
+}
+
+/* ---------- AI cabinet detection ---------- */
+// The server returns [{box_2d:[y0,x0,y1,x1], mask, label}] in 0-1000 coordinates. "cabinet" pieces are
+// painted; "glass" and "hardware" are cut out of them. Each piece stays tappable to switch it off/on.
+async function autoDetect() {
+  const id = S.photoId;
+  S.detecting = true; $("busy").hidden = false; updateHint();
+  try {
+    const k = Math.min(1, 1024 / Math.max(S.w, S.h)), c = document.createElement("canvas");
+    c.width = Math.round(S.w * k); c.height = Math.round(S.h * k);
+    c.getContext("2d").drawImage(before, 0, 0, c.width, c.height);
+    const res = await fetch(CONFIG.detectUrl, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: c.toDataURL("image/jpeg", 0.85) })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+    if (id !== S.photoId) return; // a new photo was loaded meanwhile
+    await applyDetections(data.items || []);
+  } catch (e) {
+    console.warn("Cabinet detection failed:", e);
+    if (id === S.photoId) S.detectFailed = true;
+  } finally {
+    if (id === S.photoId) { S.detecting = false; $("busy").hidden = true; updateHint(); }
+  }
+}
+
+async function pieceMask(item) {
+  const { w, h } = S, b = item.box_2d || [0, 0, 0, 0];
+  const by0 = b[0] / 1000 * h, bx0 = b[1] / 1000 * w, by1 = b[2] / 1000 * h, bx1 = b[3] / 1000 * w;
+  const x0 = Math.max(0, Math.floor(bx0)), y0 = Math.max(0, Math.floor(by0));
+  const x1 = Math.min(w, Math.ceil(bx1)), y1 = Math.min(h, Math.ceil(by1));
+  const bw = x1 - x0, bh = y1 - y0;
+  if (bw < 2 || bh < 2) return null;
+  const c = document.createElement("canvas"); c.width = bw; c.height = bh;
+  const x = c.getContext("2d", { willReadFrequently: true });
+  x.fillStyle = "#fff";
+  let mask = item.mask;
+  if (typeof mask === "string" && mask.length > 50) {
+    // PNG probability map covering the box
+    const img = new Image();
+    await new Promise((r, j) => { img.onload = r; img.onerror = j; img.src = mask.startsWith("data:") ? mask : "data:image/png;base64," + mask; });
+    x.drawImage(img, 0, 0, bw, bh);
+  } else if (Array.isArray(mask) && mask.length) {
+    // One polygon [[x,y],...] or several [[[x,y],...],...]
+    const polys = typeof mask[0][0] === "number" ? [mask] : mask;
+    const pts = polys.flat();
+    // Points may be relative to the whole photo or to the box; pick whichever keeps them inside the box
+    const inBox = pts.filter(([px, py]) => px >= b[1] - 15 && px <= b[3] + 15 && py >= b[0] - 15 && py <= b[2] + 15).length;
+    const imageFrame = inBox >= pts.length * 0.8;
+    x.beginPath();
+    for (const poly of polys) poly.forEach(([px, py], i) => {
+      const X = imageFrame ? px / 1000 * w - x0 : (bx0 - x0) + px / 1000 * (bx1 - bx0);
+      const Y = imageFrame ? py / 1000 * h - y0 : (by0 - y0) + py / 1000 * (by1 - by0);
+      i ? x.lineTo(X, Y) : x.moveTo(X, Y);
+    });
+    x.fill("evenodd");
+  } else {
+    x.fillRect(0, 0, bw, bh); // no mask: fall back to the box
+  }
+  const d = x.getImageData(0, 0, bw, bh).data, m = new Uint8Array(bw * bh);
+  for (let i = 0; i < m.length; i++) m[i] = d[i * 4] > 127 && d[i * 4 + 3] > 127 ? 1 : 0;
+  return { x0, y0, bw, bh, m, on: true, label: String(item.label || "").toLowerCase() };
+}
+
+async function applyDetections(items) {
+  const { w, h } = S, cut = new Uint8Array(w * h), pieces = [];
+  for (const it of items) {
+    const label = String(it.label || "").toLowerCase();
+    const noOutline = !Array.isArray(it.mask) || it.mask.length < 3;
+    if (/hardware|handle|knob|pull/.test(label) && noOutline) { cutHardware(it.box_2d, cut); continue; }
+    const p = await pieceMask(it).catch(() => null);
+    if (!p) continue;
+    if (/glass|hardware|handle|knob|pull/.test(p.label)) {
+      for (let y = 0; y < p.bh; y++) for (let x = 0; x < p.bw; x++) if (p.m[y * p.bw + x]) cut[(p.y0 + y) * w + p.x0 + x] = 1;
+    } else pieces.push(p);
+  }
+  for (const p of pieces) {
+    for (let y = 0; y < p.bh; y++) for (let x = 0; x < p.bw; x++) if (cut[(p.y0 + y) * w + p.x0 + x]) p.m[y * p.bw + x] = 0;
+    // refinePiece(p) is off: with whole-run outlines it threw away brightly lit wood
+    // (lighting varies across a run), and the AI's outlines are already tight.
+  }
+  S.segments = pieces.filter(p => p.m.some(v => v));
+  if (!pieces.length) { S.detectFailed = true; return; }
+  pushHistory();
+  S.mask.fill(0);
+  pieces.forEach(p => setPiece(p, 1));
+  maskChanged();
+}
+
+// Second check on the AI's outline: keep only pixels that look like this cabinet's own finish.
+// Drops what the outline swept up by mistake (wall at the edges, glass, handles, things in front),
+// while shadows and grain stay in because lightness counts for little.
+function refinePiece(p) {
+  const { w, Lb, Ab, Bb } = S, idx = [];
+  for (let y = 0; y < p.bh; y++) for (let x = 0; x < p.bw; x++) if (p.m[y * p.bw + x]) idx.push((p.y0 + y) * w + p.x0 + x);
+  if (idx.length < 50) return;
+  const step = Math.max(1, Math.floor(idx.length / 4000)), sL = [], sA = [], sB = [];
+  for (let k = 0; k < idx.length; k += step) { const i = idx[k]; sL.push(Lb[i]); sA.push(Ab[i]); sB.push(Bb[i]); }
+  const med = a => a.sort((u, v) => u - v)[a.length >> 1];
+  const mL = med(sL.slice()), mA = med(sA.slice()), mB = med(sB.slice());
+  const dist = i => Math.hypot((Lb[i] - mL) * 0.35, Ab[i] - mA, Bb[i] - mB);
+  const ds = []; for (let k = 0; k < idx.length; k += step) ds.push(dist(idx[k]));
+  ds.sort((u, v) => u - v);
+  const T = Math.max(10, Math.min(18, ds[Math.floor(ds.length * 0.6)] * 2));
+  const keep = new Float32Array(p.bw * p.bh);
+  for (let y = 0; y < p.bh; y++) for (let x = 0; x < p.bw; x++) {
+    const j = y * p.bw + x;
+    if (p.m[j] && dist((p.y0 + y) * w + p.x0 + x) <= T) keep[j] = 1;
+  }
+  // Close pinholes (knots, specks) but never grow past the AI's outline
+  const r = Math.max(1, Math.round(Math.max(S.w, S.h) / 500));
+  let f = boxBlur(keep, p.bw, p.bh, r); for (let j = 0; j < f.length; j++) f[j] = f[j] > 0.001 ? 1 : 0;
+  f = boxBlur(f, p.bw, p.bh, r);
+  for (let j = 0; j < f.length; j++) p.m[j] = p.m[j] && (keep[j] || f[j] > 0.999) ? 1 : 0;
+}
+
+// Handles come back as boxes only. Inside a slightly padded box, the ring of pixels along the
+// edge is cabinet; anything clearly different from that ring is the handle and keeps its look.
+function cutHardware(b, cut) {
+  if (!b || b.length < 4) return;
+  const { w, h, Lb, Ab, Bb } = S;
+  const pad = Math.max(2, Math.round(Math.max(w, h) / 400));
+  const x0 = Math.max(0, Math.floor(b[1] / 1000 * w) - pad), x1 = Math.min(w - 1, Math.ceil(b[3] / 1000 * w) + pad);
+  const y0 = Math.max(0, Math.floor(b[0] / 1000 * h) - pad), y1 = Math.min(h - 1, Math.ceil(b[2] / 1000 * h) + pad);
+  if (x1 - x0 < 3 || y1 - y0 < 3 || (x1 - x0) * (y1 - y0) > w * h * 0.02) return; // not a handle-sized box
+  const rL = [], rA = [], rB = [];
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    if (y > y0 + 1 && y < y1 - 1 && x > x0 + 1 && x < x1 - 1) continue;
+    const i = y * w + x; rL.push(Lb[i]); rA.push(Ab[i]); rB.push(Bb[i]);
+  }
+  const med = a => a.sort((u, v) => u - v)[a.length >> 1];
+  const mL = med(rL), mA = med(rA), mB = med(rB);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = y * w + x;
+    // Lightness at half weight: the handle's shadow on the door is the door's colour, only darker
+    if (Math.hypot((Lb[i] - mL) * 0.5, Ab[i] - mA, Bb[i] - mB) > 14) cut[i] = 1;
+  }
+}
+
+function setPiece(p, val) {
+  const { w, mask } = S;
+  for (let y = 0; y < p.bh; y++) for (let x = 0; x < p.bw; x++) {
+    if (!p.m[y * p.bw + x]) continue;
+    const i = (p.y0 + y) * w + p.x0 + x;
+    // When switching a piece off, keep pixels another switched-on piece still covers
+    if (!val && S.segments.some(q => q !== p && q.on && pieceHas(q, p.x0 + x, p.y0 + y))) continue;
+    mask[i] = val;
+  }
+}
+const pieceHas = (p, x, y) => x >= p.x0 && y >= p.y0 && x < p.x0 + p.bw && y < p.y0 + p.bh && p.m[(y - p.y0) * p.bw + x - p.x0] === 1;
+function pieceAt(x, y) {
+  // Smallest piece under the finger, so a door wins over the cabinet run around it
+  return S.segments.filter(p => pieceHas(p, x, y)).sort((a, b) => a.bw * a.bh - b.bw * b.bh)[0];
+}
+function togglePiece(p) {
+  pushHistory();
+  p.on = !p.on;
+  setPiece(p, p.on ? 1 : 0);
+  maskChanged();
 }
 
 $("restart").onclick = () => { fileInput.value = ""; $("editor").hidden = true; $("start").hidden = false; fileInput.click(); };
 
 /* ---------- selection ---------- */
-function pushHistory() { S.history.push(S.mask.slice()); if (S.history.length > 25) S.history.shift(); updateUndo(); }
+function pushHistory() {
+  S.history.push({ mask: S.mask.slice(), on: S.segments.map(p => p.on) });
+  if (S.history.length > 25) S.history.shift();
+  updateUndo();
+}
 function updateUndo() { $("undo").disabled = !S.history.length; }
-$("undo").onclick = () => { if (!S.history.length) return; S.mask = S.history.pop(); updateUndo(); maskChanged(); };
+$("undo").onclick = () => {
+  if (!S.history.length) return;
+  const h = S.history.pop();
+  S.mask = h.mask; S.segments.forEach((p, i) => { if (i < h.on.length) p.on = h.on[i]; });
+  updateUndo(); maskChanged();
+};
 
 // Tap: flood-fill similar colour, then close small gaps (wood knots, grain) inside the area
 function wand(x, y) {
@@ -439,6 +620,13 @@ function maskChanged() {
   for (let i = 0; i < n; i++) if (mask[i]) { sum += Yb[i]; cnt++; }
   S.yMean = cnt ? sum / cnt : 0.2;
   S.selected = cnt;
+  // Broad lighting across the painted area, averaged only over cabinet pixels so a dark counter
+  // or bright wall next to a door doesn't bleed into it
+  const m = Float32Array.from(mask), ym = new Float32Array(n);
+  for (let i = 0; i < n; i++) ym[i] = mask[i] ? Yb[i] : 0;
+  const r = Math.max(6, Math.round(Math.max(w, h) / 60)), num = boxBlur(ym, w, h, r), den = boxBlur(m, w, h, r);
+  S.Ylight = new Float32Array(n);
+  for (let i = 0; i < n; i++) S.Ylight[i] = den[i] > 0.02 ? num[i] / den[i] : Yb[i];
   render();
   updateHint();
 }
@@ -458,15 +646,16 @@ let raf = 0;
 function render() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); }
 function draw() {
   if (!outImg || !S.color) return;
-  const { orig, alpha, Y, Yb, yMean, tY, w, h } = S, out = outImg.data, n = w * h;
+  const { orig, alpha, Yb, Ylight, yMean, tY, w, h } = S, out = outImg.data, n = w * h;
   out.set(orig);
   for (let i = 0; i < n; i++) {
     const al = alpha[i];
     if (al <= 0) continue;
-    // Keep the room's light and shadow, mostly drop the wood grain, apply the paint colour
-    const shade = Math.pow(Math.min(2.5, Math.max(0.1, Yb[i] / yMean)), 0.8);
-    const grain = Math.pow(Math.max(0.2, Math.min(3, Y[i] / Math.max(1e-4, Yb[i]))), 0.15);
-    let yN = tY * shade * grain;
+    // Final-coat look: an even, solid colour. Only the room's broad lighting and a softened hint of the
+    // door profiles carry over; the old finish's grain and blotches don't.
+    const light = Math.pow(Math.min(2.5, Math.max(0.15, Ylight[i] / yMean)), 0.75);
+    const profile = Math.pow(Math.min(1.4, Math.max(0.55, Yb[i] / Math.max(1e-4, Ylight[i]))), 0.45);
+    let yN = tY * light * profile;
     // Roll off highlights softly so light colours don't blow out to flat white
     if (yN > tY) { const room = Math.max(0.04, (1 - tY) * 0.9); yN = tY + room * (1 - Math.exp(-(yN - tY) / room)); }
     const L = yN > 0.008856 ? 116 * Math.cbrt(yN) - 16 : 903.3 * yN;
@@ -490,6 +679,7 @@ stage.addEventListener("pointerdown", ev => {
   if (ev.button > 0) return;
   const p = toImage(ev);
   if (S.comparing) { drag = { mode: "split" }; setSplit(p.rx / p.rw); stage.setPointerCapture(ev.pointerId); return; }
+  if (AUTO && !S.adjusting) return; // the photo isn't editable until the customer asks to adjust
   if (S.tool === "wand") { drag = { mode: "tap", x: ev.clientX, y: ev.clientY }; return; }
   pushHistory();
   drag = { mode: "paint", last: p };
@@ -510,8 +700,9 @@ stage.addEventListener("pointermove", ev => {
 const endDrag = ev => {
   if (!drag) return;
   if (drag.mode === "tap" && ev.type === "pointerup" && Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) < 10) {
-    const p = toImage(ev);
-    wand(Math.min(S.w - 1, Math.max(0, Math.floor(p.x))), Math.min(S.h - 1, Math.max(0, Math.floor(p.y))));
+    const p = toImage(ev), px = Math.min(S.w - 1, Math.max(0, Math.floor(p.x))), py = Math.min(S.h - 1, Math.max(0, Math.floor(p.y)));
+    const piece = pieceAt(px, py);
+    if (piece) togglePiece(piece); else if (!S.detecting) wand(px, py);
   }
   if (drag.mode === "paint") maskChanged();
   drag = null;
@@ -547,6 +738,7 @@ function setCompare(on) {
   $("compare").setAttribute("aria-pressed", on);
   stage.className = "stage " + (on ? "comparing" : "tool-" + S.tool);
   ["divider", "tagBefore", "tagAfter"].forEach(id => $(id).hidden = !on);
+  stage.style.cursor = AUTO && !S.adjusting && !on ? "default" : "";
   setSplit(on ? 0.5 : 0);
   updateHint();
 }
@@ -562,6 +754,12 @@ function updateHint() {
   if (S.comparing) return hint("Drag across the photo to compare <b>before</b> and <b>after</b>.");
   if (S.tool === "brush") return hint("Paint over any cabinet areas the tap missed.");
   if (S.tool === "erase") return hint("Paint over countertops, handles or walls that shouldn't change.");
+  if (S.detecting) return hint("🔍 Finding your cabinets. This takes about 30 seconds, so hang tight…");
+  if (AUTO && S.adjusting) return hint("Tap a painted piece to switch it off, or tap an unpainted spot to add it. Tap <b>Done</b> when it looks right.");
+  if (AUTO && S.segments.length) return hint(`Your cabinets are shown in <b>${S.color.name}</b>. Pick any colour to try it.`);
+  if (AUTO && S.detectFailed) return hint("We couldn't find the cabinets in this photo. Try one taken straight on with the lights on, or tap <b>Adjust</b> to paint them yourself.", true);
+  if (S.segments.length) return hint(`We found <b>${S.segments.length}</b> cabinet pieces. Tap a piece to switch it off or back on. Missed a spot? Tap it, or use <b>Brush</b>.`);
+  if (S.detectFailed && !S.selected) return hint("We couldn't spot the cabinets automatically. <b>Tap each cabinet door</b> to paint it.", true);
   if (!S.selected) return hint("👆 <b>Tap a cabinet door</b> to paint it. Then tap each of the others.");
   hint("Keep tapping doors and drawers to add them. Spilled onto the wall? <b>Undo</b>, lower <b>Spread</b>, or use <b>Erase</b>.");
 }
@@ -593,7 +791,7 @@ function pickColor(c) {
   S.color = c;
   document.querySelectorAll(".sw").forEach(b => b.setAttribute("aria-pressed", b.dataset.num === c.num));
   $("curChip").style.background = c.hex; $("curName").textContent = c.name; $("curNum").textContent = "SW " + c.num;
-  buildLut(); render();
+  buildLut(); render(); if (outImg) updateHint();
 }
 $("search").addEventListener("input", () => {
   const q = $("search").value.trim().toLowerCase().replace(/^sw\s*/, ""), box = $("results");
@@ -681,6 +879,22 @@ if (parent !== window && "ResizeObserver" in window) {
   const app = $("app");
   new ResizeObserver(() => parent.postMessage({ type: "cabinet-visualizer:height", height: Math.ceil(app.getBoundingClientRect().height) }, "*"))
     .observe(app);
+}
+
+if (AUTO) {
+  $("intro").textContent = "Upload a photo of your kitchen and see your cabinets in any Sherwin-Williams colour in seconds.";
+  $("tip2").lastChild.textContent = "We find your cabinets and paint them automatically.";
+  $("fixTools").hidden = true; $("adjust").hidden = false; $("aiNote").hidden = false;
+}
+$("adjust").onclick = () => setAdjusting(!S.adjusting);
+function setAdjusting(on) {
+  S.adjusting = on;
+  if (on && S.comparing) setCompare(false);
+  $("fixTools").hidden = AUTO && !on;
+  $("adjust").textContent = on ? "Done" : "Adjust";
+  $("adjust").setAttribute("aria-pressed", on);
+  stage.style.cursor = AUTO && !on && !S.comparing ? "default" : "";
+  updateHint();
 }
 
 buildPopular();
