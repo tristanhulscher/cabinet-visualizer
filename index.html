@@ -119,6 +119,16 @@
   .search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   .more-note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
   .quick { display: none; }
+  .saved { margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  .saved-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 14px; margin-bottom: 8px; }
+  .saved-head span { color: var(--muted); font-size: 12px; }
+  .saved-list { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+  .saved-item { flex: 0 0 96px; border: 2px solid transparent; border-radius: 10px; background: #fff; padding: 4px; cursor: pointer; text-align: left; position: relative; }
+  .saved-item[aria-pressed="true"] { border-color: var(--accent); }
+  .saved-item img { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 6px; }
+  .saved-item i { position: absolute; top: 8px; right: 8px; width: 16px; height: 16px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.2); }
+  .saved-item span { display: block; font-size: 12px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .saved-item.loading { display: grid; place-items: center; min-height: 120px; font-size: 12px; color: var(--muted); }
   .actions { display: grid; gap: 8px; margin-top: 16px; }
   .actions .btn { width: 100%; }
 
@@ -191,6 +201,10 @@
         <div class="divider" id="divider" hidden><span>⇔</span></div>
         <div class="tag" id="tagBefore" style="left:10px" hidden>Before</div>
         <div class="tag" id="tagAfter" style="right:10px" hidden>After</div>
+      </div>
+      <div class="saved" id="saved" hidden>
+        <div class="saved-head"><b>Your colours</b><span id="savedCount"></span></div>
+        <div class="saved-list" id="savedList"></div>
       </div>
       <div class="quick" id="quick" aria-label="Popular cabinet colours"></div>
       <div class="hint" id="hint"></div>
@@ -388,7 +402,7 @@ function setup(img) {
   Object.assign(S, {
     w, h, orig: data, Lb: boxBlur(L, w, h, r1), Ab: boxBlur(A, w, h, r1), Bb: boxBlur(B, w, h, r1),
     Y, Yb: boxBlur(Y, w, h, r2), Yd: boxBlur(Y, w, h, Math.max(1, Math.round(Math.max(w, h) / 480))), mask: new Uint8Array(n), alpha: new Float32Array(n), history: [],
-    aiY: null, aiOK: null, aiSoft: null, aiBase: null, renders: {}, pending: new Set(), paintCount: 0, hw: null, pad: null, serviceDown: false, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
+    aiY: null, aiOK: null, aiSoft: null, aiBase: null, renders: {}, pending: new Set(), paintCount: 0, saved: [], thumbs: {}, hw: null, pad: null, serviceDown: false, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
   });
   outImg = new ImageData(new Uint8ClampedArray(data), w, h);
   $("start").hidden = true; $("editor").hidden = false;
@@ -445,7 +459,7 @@ async function autoDetect() {
     const [found, coat] = await Promise.all([S.pad.unpad(data.image), data.grey ? S.pad.unpad(data.grey).catch(() => null) : null]);
     if (id !== S.photoId) return;
     applyMagenta(found, coat);
-    if (S.autoFound) requestPaint(S.color);
+    if (S.autoFound) { updateSaved(); requestPaint(S.color); } // the first colour renders right away
   } catch (e) {
     console.warn("Cabinet detection failed:", e);
     // The service didn't answer (busy, limit, network): that's not the photo's fault, so say so
@@ -570,13 +584,33 @@ function snapEdges(core) {
 // For each colour the customer picks, the AI paints the cabinets in that real Sherwin-Williams colour.
 // We keep only the cabinets from its picture and correct them to the exact chip; the instant preview
 // shows until it arrives. Renders are cached per colour and capped per photo to keep costs known.
-const MAX_RENDERS = 8;
+const MAX_RENDERS = 5;      // photo-real colours per customer (across all their photos, per day)
+const DWELL_MS = 1500;      // wait this long on a colour before rendering it, so flicking through is free
+let dwellTimer = 0;
+
+// Count is kept in the customer's browser for a day; the Worker also limits per visitor as a backstop
+function usedRenders() {
+  try {
+    const u = JSON.parse(localStorage.getItem("cv_renders") || "{}");
+    return u.day === new Date().toDateString() ? u.count || 0 : 0;
+  } catch (e) { return S.paintCount; }
+}
+function addUsedRender() {
+  try { localStorage.setItem("cv_renders", JSON.stringify({ day: new Date().toDateString(), count: usedRenders() + 1 })); } catch (e) {}
+}
+const rendersLeft = () => Math.max(0, MAX_RENDERS - Math.max(usedRenders(), S.paintCount));
+
+function schedulePaint(c) {
+  clearTimeout(dwellTimer);
+  if (!CONFIG.detectUrl || !S.autoFound || S.renders[c.num] || S.pending.has(c.num)) return;
+  dwellTimer = setTimeout(() => { if (S.color && S.color.num === c.num) requestPaint(c); }, DWELL_MS);
+}
 
 async function requestPaint(c) {
   if (!CONFIG.detectUrl || !S.autoFound || !S.pad || S.renders[c.num] || S.pending.has(c.num)) return;
-  if (S.paintCount >= MAX_RENDERS) { updateHint(); return; }
+  if (rendersLeft() <= 0) { updateHint(); return; }
   const id = S.photoId;
-  S.pending.add(c.num); S.paintCount++; updateBadge();
+  S.pending.add(c.num); S.paintCount++; addUsedRender(); updateBadge(); updateSaved();
   try {
     const res = await fetch(CONFIG.detectUrl, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -588,11 +622,49 @@ async function requestPaint(c) {
     const px = await S.pad.unpad(data.image);
     if (id !== S.photoId) return;
     S.renders[c.num] = correctRender(px, c);
+    S.saved.push(c);
+    S.thumbs[c.num] = makeThumb(c);
     if (S.color.num === c.num) render();
   } catch (e) {
     console.warn("Photo-real render failed:", e); // the instant preview stays
   } finally {
-    if (id === S.photoId) { S.pending.delete(c.num); updateBadge(); }
+    if (id === S.photoId) { S.pending.delete(c.num); updateBadge(); updateSaved(); updateHint(); }
+  }
+}
+
+// Small picture of the customer's own kitchen in a saved colour, for the "Your colours" strip
+function makeThumb(c) {
+  const keep = S.color;
+  S.color = c; buildLut(); draw();
+  const k = 220 / Math.max(S.w, S.h), t = document.createElement("canvas");
+  t.width = Math.round(S.w * k); t.height = Math.round(S.h * k);
+  t.getContext("2d").drawImage(after, 0, 0, t.width, t.height);
+  S.color = keep; buildLut(); draw();
+  return t.toDataURL("image/jpeg", 0.8);
+}
+
+function updateSaved() {
+  const box = $("saved");
+  if (!S.autoFound || (!S.saved.length && !S.pending.size)) { box.hidden = true; return; }
+  box.hidden = false;
+  const left = rendersLeft();
+  $("savedCount").textContent = left > 0 ? `${MAX_RENDERS - left} of ${MAX_RENDERS} photo-real previews used` : `All ${MAX_RENDERS} photo-real previews used`;
+  const list = $("savedList"); list.textContent = "";
+  for (const c of S.saved) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "saved-item"; b.setAttribute("aria-pressed", S.color.num === c.num);
+    b.title = `SW ${c.num} ${c.name}`;
+    const img = document.createElement("img"); img.src = S.thumbs[c.num]; img.alt = "";
+    const n = document.createElement("span"); n.textContent = c.name;
+    const chip = document.createElement("i"); chip.style.background = c.hex;
+    b.append(img, chip, n);
+    b.onclick = () => pickColor(c);
+    list.append(b);
+  }
+  for (const num of S.pending) {
+    const c = BY_NUM[num], d = document.createElement("div");
+    d.className = "saved-item loading"; d.textContent = `✨ ${c ? c.name : ""}…`;
+    list.append(d);
   }
 }
 
@@ -912,8 +984,8 @@ function updateHint() {
   if (S.tool === "brush") return hint("Paint over any cabinet areas the tap missed.");
   if (S.tool === "erase") return hint("Paint over countertops, handles or walls that shouldn't change.");
   if (S.detecting) return hint("🔍 Finding your cabinets. This takes about 30 seconds, so hang tight…");
-  if (AUTO && S.autoFound && S.paintCount >= MAX_RENDERS && !S.renders[S.color.num])
-    return hint(`Showing a quick preview of <b>${S.color.name}</b>. You've seen ${MAX_RENDERS} photo-real colours for this photo; ask us for a free quote to see more.`);
+  if (AUTO && S.autoFound && rendersLeft() <= 0 && !S.renders[S.color.num])
+    return hint(`Showing a quick preview of <b>${S.color.name}</b>. You've used your ${MAX_RENDERS} photo-real previews; tap any of <b>Your colours</b> to see them again, or ask us for a free quote.`);
   if (AUTO && S.autoFound) return hint(`Your cabinets are shown in <b>${S.color.name}</b>. Pick any colour to try it.`);
   if (S.serviceDown) return hint("Our visualizer is busy right now. Please try again in a few minutes.", true);
   if (S.detectFailed) return hint("We couldn't find the cabinets in this photo. Try another one taken straight on, with the lights on and the cabinets filling most of the picture.", true);
@@ -949,7 +1021,7 @@ function pickColor(c) {
   S.color = c;
   document.querySelectorAll(".sw").forEach(b => b.setAttribute("aria-pressed", b.dataset.num === c.num));
   $("curChip").style.background = c.hex; $("curName").textContent = c.name; $("curNum").textContent = "SW " + c.num;
-  buildLut(); render(); if (outImg) { updateHint(); updateBadge(); requestPaint(c); }
+  buildLut(); render(); if (outImg) { updateHint(); updateBadge(); updateSaved(); schedulePaint(c); }
 }
 $("search").addEventListener("input", () => {
   const q = $("search").value.trim().toLowerCase().replace(/^sw\s*/, ""), box = $("results");

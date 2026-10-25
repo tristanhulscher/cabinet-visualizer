@@ -18,8 +18,9 @@ const ALLOWED_ORIGINS = [
 ];
 const ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
 const MAX_IMAGE_CHARS = 4_000_000;      // ~3 MB JPEG; the page sends ~2048px photos (~600 KB)
-const PER_IP_LIMIT = 40;                // requests per IP per hour: 1 to find cabinets + up to ~8 colours per photo, a few photos
-const WINDOW_MS = 60 * 60 * 1000;
+const FIND_LIMIT = 10;                  // photo uploads per visitor per hour
+const PAINT_LIMIT = 8;                  // colour renders per visitor per day (the page allows 5; a little slack for retries)
+const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
 
 const PROMPT = `Edit this photo for a cabinet-painting preview.
 Repaint ONLY the cabinetry in a flat, solid, fully saturated magenta (#FF00FF): every cabinet door,
@@ -80,12 +81,13 @@ function reply(body, status, origin) {
   });
 }
 
-function rateLimited(ip) {
+// Best effort: counts live per Worker instance, so this is a backstop, not an exact meter
+function rateLimited(key, limit, windowMs) {
   const now = Date.now();
-  const list = (hits.get(ip) || []).filter(t => now - t < WINDOW_MS);
-  if (list.length >= PER_IP_LIMIT) { hits.set(ip, list); return true; }
+  const list = (hits.get(key) || []).filter(t => now - t < windowMs);
+  if (list.length >= limit) { hits.set(key, list); return true; }
   list.push(now);
-  hits.set(ip, list);
+  hits.set(key, list);
   return false;
 }
 
@@ -128,7 +130,6 @@ export default {
     if (!env.GEMINI_API_KEY) return reply({ error: "GEMINI_API_KEY secret is not set" }, 500, origin);
 
     const ip = request.headers.get("CF-Connecting-IP") || "unknown";
-    if (rateLimited(ip)) return reply({ error: "Too many photos, please try again later" }, 429, origin);
 
     let body;
     try { body = await request.json(); } catch { body = {}; }
@@ -140,6 +141,9 @@ export default {
     const jpeg = image.slice(image.indexOf(",") + 1);
 
     const t0 = Date.now();
+    if (rateLimited((body.mode === "paint" ? "p:" : "f:") + ip, body.mode === "paint" ? PAINT_LIMIT : FIND_LIMIT, body.mode === "paint" ? DAY : HOUR)) {
+      return reply({ error: "You've reached today's limit, please try again later" }, 429, origin);
+    }
     if (body.mode === "paint") {
       const c = body.color || {};
       if (!/^\d{4}$/.test(c.num || "") || !/^[0-9A-Fa-f]{6}$/.test(c.hex || "") || typeof c.name !== "string" || c.name.length > 60) {
