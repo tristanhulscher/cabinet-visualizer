@@ -80,6 +80,8 @@
   }
   .busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(255,255,255,.4); pointer-events: none; line-height: 1.4; }
 
+  .noise-note { margin: 8px 0 0; font-size: 13px; color: #8a4b00; }
+  .bot-check { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 50; }
   .hint {
     margin: 12px 0 0; padding: 10px 14px; border-radius: 10px;
     background: color-mix(in srgb, var(--accent) 9%, #fff); border: 1px solid color-mix(in srgb, var(--accent) 25%, #fff);
@@ -173,6 +175,7 @@
 </style>
 </head>
 <body>
+<div class="bot-check" id="botCheck"></div>
 <div class="app" id="app">
   <header>
     <h1 id="title">See your cabinets in a new colour</h1>
@@ -218,6 +221,7 @@
       </div>
       <div class="quick" id="quick" aria-label="Popular cabinet colours"></div>
       <div class="hint" id="hint"></div>
+      <p class="noise-note" id="noiseNote" hidden></p>
       <div class="toolbar">
         <span class="fix" id="fixTools">
         <div class="seg" role="group" aria-label="Selection tool">
@@ -298,6 +302,7 @@ const CONFIG = {
   quoteWebhook: "",                    // e.g. a HighLevel or Zapier "inbound webhook" URL (form fields are POSTed to it)
   quoteUrl: "",                        // OR a link to your existing quote page (colour is added as ?color=...)
   detectUrl: "https://cabinet-detect.tristanhulscher.workers.dev/", // AI cabinet detection (Cloudflare Worker)
+  turnstileSiteKey: "0x4AAAAAAFlhejxDN4d8KPn6", // Cloudflare Turnstile bot check (public key; "" turns it off)
   watermark: true,                     // brand name in the corner of downloaded photos
   maxSize: 1600                        // longest side photos are scaled to (pixels); the AI renders at 2K
 };
@@ -306,7 +311,7 @@ const CONFIG = {
 // URL overrides let the same file be reused: index.html?brand=...&accent=%23123456&quoteUrl=...
 (() => {
   const q = new URLSearchParams(location.search);
-  for (const k of ["brand", "accent", "defaultColor", "quoteUrl", "detectUrl"]) if (q.get(k)) CONFIG[k] = q.get(k);
+  for (const k of ["brand", "accent", "defaultColor", "quoteUrl", "detectUrl", "turnstileSiteKey"]) if (q.get(k)) CONFIG[k] = q.get(k);
   // Short test switch: ?ai=1 turns on AI detection without pasting the long Worker address
   if (q.get("ai") === "1") CONFIG.detectUrl = "https://cabinet-detect.tristanhulscher.workers.dev/";
 })();
@@ -476,6 +481,62 @@ function updatePhotos() {
   }
 }
 
+/* ---------- talking to the AI service ---------- */
+// Bot check: the page passes Cloudflare Turnstile once (invisible for almost everyone) and swaps the
+// token for a session the Worker signs; every AI request carries it, so bots can't spend the AI credit.
+const BOT_CHECK = !!CONFIG.turnstileSiteKey && /^https:/.test(CONFIG.detectUrl);
+let sessionWait = null, sessionVal = null, tsWidget = null, tsWaiter = null, botNeedsTap = false;
+function botToken() {
+  return new Promise((ok, bad) => {
+    tsWaiter = { ok, bad };
+    const start = () => {
+      if (tsWidget !== null) { turnstile.reset(tsWidget); return; }
+      tsWidget = turnstile.render($("botCheck"), {
+        sitekey: CONFIG.turnstileSiteKey, appearance: "interaction-only",
+        callback: token => tsWaiter && tsWaiter.ok(token),
+        // Rarely, Cloudflare wants a tap on its box; say so, or the customer would just see "finding…"
+        "before-interactive-callback": () => { botNeedsTap = true; updateHint(); },
+        "after-interactive-callback": () => { botNeedsTap = false; updateHint(); },
+        "error-callback": () => { tsWaiter && tsWaiter.bad(new Error("bot check error")); }
+      });
+    };
+    if (window.turnstile) return start();
+    const s = document.createElement("script");
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    s.async = true; s.onload = start; s.onerror = () => bad(new Error("bot check didn't load"));
+    document.head.append(s);
+  });
+}
+// A session, from the bot check. `stale` is a session the Worker just turned down (expired)
+function getSession(stale) {
+  if (!BOT_CHECK) return Promise.resolve(null);
+  if (stale && stale === sessionVal) { sessionWait = null; sessionVal = null; }
+  if (!sessionWait) {
+    sessionWait = botToken()
+      .then(token => fetch(CONFIG.detectUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "hello", turnstile: token }) }))
+      .then(r => r.json())
+      .then(d => { if (!d.session) throw new Error(d.error || "bot check failed"); return (sessionVal = d.session); });
+    sessionWait.catch(() => { sessionWait = null; });
+  }
+  return sessionWait;
+}
+async function callAI(body) {
+  let used = null;
+  for (let attempt = 0; ; attempt++) {
+    used = await getSession(attempt ? used : null);
+    const res = await fetch(CONFIG.detectUrl, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(used ? { ...body, session: used } : body)
+    });
+    const data = await res.json();
+    if (data.needCheck && BOT_CHECK && attempt === 0) continue; // session expired: check again once
+    if (!res.ok) throw new Error(data.error || res.status);
+    return data;
+  }
+}
+const paintBody = (st, c) => ({ image: st.pad.image, aspect: st.pad.aspect, mode: "paint", color: { num: c.num, name: c.name, hex: c.hex.slice(1) } });
+const fetchPaint = (st, c) => callAI(paintBody(st, c)).then(d => st.pad.unpad(d.image));
+
 /* ---------- AI cabinet detection ---------- */
 // The detection service sends the photo back with only the cabinets repainted magenta, so every
 // magenta pixel is cabinet. The photo is padded out to a shape the AI draws natively and trimmed
@@ -515,16 +576,17 @@ async function autoDetect() {
   st.detecting = true; $("busy").hidden = false; updateHint(); updatePhotos();
   try {
     st.pad = padPhoto();
+    // The colour render doesn't need the outline, so start it alongside the find: the first photo-real
+    // result arrives ~10s sooner. It's only kept (and counted) once the cabinets are found.
+    st.early = {};
+    const first = [...G.saved, ...[...G.pending].map(num => BY_NUM[num])];
+    if (S.color && !first.includes(S.color) && rendersLeft() > 0) first.push(S.color);
+    for (const c of first) { const p = fetchPaint(st, c); p.catch(() => {}); st.early[c.num] = p; }
     // The AI occasionally returns a shifted or redrawn picture; the checks in applyMagenta reject it,
     // and one more try usually comes back clean
     for (let attempt = 0; attempt < 2; attempt++) {
       st.detectFailed = false;
-      const res = await fetch(CONFIG.detectUrl, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: st.pad.image, aspect: st.pad.aspect })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || res.status);
+      const data = await callAI({ image: st.pad.image, aspect: st.pad.aspect });
       if (!photos.includes(st)) return; // started over meanwhile
       const [found, coat] = await Promise.all([st.pad.unpad(data.image), data.grey ? st.pad.unpad(data.grey).catch(() => null) : null]);
       if (!photos.includes(st)) return;
@@ -586,15 +648,20 @@ function applyMagenta(ed, coat) {
   }
   const rb = Math.max(4, Math.round(Math.max(w, h) / 220)) + 2;
   const num = boxBlur(s, w, h, rb), den = boxBlur(cf, w, h, rb), sm = boxBlur(s, w, h, 1), sd = boxBlur(cf, w, h, 1);
-  const aiY = new Float32Array(n), aiOK = new Uint8Array(n), base = new Uint8Array(n);
+  const aiY = new Float32Array(n), aiOK = new Uint8Array(n), base = new Uint8Array(n), coatPainted = new Uint8Array(n);
   let sum = 0, cnt = 0;
   for (let i = 0; i < n; i++) {
     base[i] = soft[i] > 0.5 ? 1 : 0;
     // Averages count cabinet pixels only, so edges don't pick up darkness from outside
     if (core[i]) { aiY[i] = sm[i] / sd[i]; aiOK[i] = 1; sum += aiY[i]; cnt++; }
+    // The grey coat turned this into neutral grey paint: it's cabinet surface, not glass or shelf contents
+    if (coat && core[i]) {
+      const p = i * 4, R = coat[p], G = coat[p + 1], B = coat[p + 2];
+      if (Math.max(R, G, B) - Math.min(R, G, B) < 22 && (Math.abs(R - orig[p]) + Math.abs(G - orig[p + 1]) + Math.abs(B - orig[p + 2])) / 3 > 18) coatPainted[i] = 1;
+    }
     else if (den[i] > 0.01) { aiY[i] = num[i] / den[i]; aiOK[i] = 1; }
   }
-  Object.assign(S, { aiY, aiOK, aiSoft: soft, aiBase: base, aiMean: cnt ? sum / cnt : 0.2 });
+  Object.assign(S, { aiY, aiOK, aiSoft: soft, aiBase: base, aiMean: cnt ? sum / cnt : 0.2, coatPainted: coat ? coatPainted : null });
   findHardware(coat);
   pushHistory();
   S.mask = base.slice(); S.autoFound = true;
@@ -710,13 +777,12 @@ async function paintFor(st, c) {
     // would land beside the real cabinets. Check outside the cabinets, retry once, else keep the preview.
     let px = null;
     for (let attempt = 0; attempt < 2 && !px; attempt++) {
-      const res = await fetch(CONFIG.detectUrl, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: st.pad.image, aspect: st.pad.aspect, mode: "paint", color: { num: c.num, name: c.name, hex: c.hex.slice(1) } })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || res.status);
-      const cand = await st.pad.unpad(data.image);
+      // The first try may already be on its way (started with the find)
+      const early = attempt === 0 && st.early && st.early[c.num];
+      if (early) delete st.early[c.num];
+      let cand;
+      try { cand = await (early || fetchPaint(st, c)); }
+      catch (e) { if (early) continue; throw e; }
       if (!photos.includes(st)) return;
       const align = renderAlign(st, cand);
       console.info(`Colour render ${c.num}: edge alignment ${align.toFixed(2)}`);
@@ -871,11 +937,30 @@ function correctRender(px, c) {
   for (let i = 0; i < n; i++) if (aiBase[i]) { fa[Math.max(0, Math.min(511, Math.round(Ab[i] * 2) + 256))]++; fb[Math.max(0, Math.min(511, Math.round(Bb[i] * 2) + 256))]++; fn++; }
   const med = h2 => { let acc = 0; for (let i = 0; i < 512; i++) { acc += h2[i]; if (acc >= fn / 2) return (i - 256) / 2; } return 0; };
   const finA = med(fa), finB = med(fb);
+  // Very dark old wood in deep shadow: a dark colour render barely differs from it, so trust the grey
+  // coat there instead (it painted it). Only solid patches count, single pixels would speckle.
+  let dark = null;
+  if (S.coatPainted) {
+    dark = new Float32Array(n);
+    for (let i = 0; i < n; i++) dark[i] = S.coatPainted[i] && Lb[i] < 25 ? 1 : 0;
+    dark = boxBlur(dark, w, h, 3);
+  }
   for (let i = 0; i < n; i++) {
     if (!aiOK[i]) continue;
-    if (Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) > 12) changed[i] = 1;
-    else if (aiBase[i] && Math.hypot(Ab[i] - finA, Bb[i] - finB) < 10) { changed[i] = 1; own[i] = 1; }
+    // Also painted: a spot whose colour moved clearly toward the chip, even if it's no lighter or darker
+    // (navy over dark cherry in shadow is almost as dark as before, but no longer brown)
+    const tA = t[1] - Ab[i], tB = t[2] - Bb[i], tl = Math.hypot(tA, tB);
+    const toward = tl > 10 && ((A[i] - Ab[i]) * tA + (B[i] - Bb[i]) * tB) / tl > Math.max(5, 0.35 * tl);
+    if (Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) > 12 || toward) changed[i] = 1;
+    // Skipped, but still the old finish (or dark wood the coat painted): cabinet, so we paint it ourselves
+    else if (aiBase[i] && (Math.hypot(Ab[i] - finA, Bb[i] - finB) < 10 || (dark && dark[i] > 0.6))) { changed[i] = 1; own[i] = 1; }
   }
+  // Close thin unpainted seams (a 1-3px line where a door meets the crown or a frame) so they don't show
+  // as a dashed line of old finish; bigger unpainted areas (glass, open shelves) are untouched
+  const seam = 2, grow = boxBlur(changed, w, h, seam);
+  for (let i = 0; i < n; i++) grow[i] = grow[i] > 0.001 ? 0 : 1;
+  const shrink = boxBlur(grow, w, h, seam);
+  for (let i = 0; i < n; i++) if (aiBase[i] && !changed[i] && shrink[i] < 0.001) changed[i] = 1;
   // Hardware the AI drew (knobs it recoloured, pulls it restyled): small compact spots inside the
   // cabinets that stand out from the paint around them in this render. They show the original photo.
   const rhw = renderHardware(L, A, B, aiBase, w, h);
@@ -1167,7 +1252,8 @@ function updateHint() {
   if (S.comparing) return hint("Drag across the photo to compare <b>before</b> and <b>after</b>.");
   if (S.tool === "brush") return hint("Paint over any cabinet areas the tap missed.");
   if (S.tool === "erase") return hint("Paint over countertops, handles or walls that shouldn't change.");
-  if (S.detecting) return hint("🔍 Finding your cabinets. This takes about 30 seconds, so hang tight…");
+  if (S.detecting && botNeedsTap) return hint("One quick check first: tap <b>Verify you are human</b> at the bottom of the page.", true);
+  if (S.detecting) return hint("🔍 Finding your cabinets and painting them. This takes about 20 seconds, so hang tight…");
   if (AUTO && S.autoFound && rendersLeft() <= 0 && !S.renders[S.color.num])
     return hint(`Showing a quick preview of <b>${S.color.name}</b>. You've used your ${MAX_RENDERS} photo-real previews; tap any of <b>Your colours</b> to see them again, or ask us for a free quote.`);
   if (AUTO && S.autoFound) return hint(`Your cabinets are shown in <b>${S.color.name}</b>. Pick any colour to try it.`);
@@ -1300,6 +1386,33 @@ if (AUTO) {
   $("tip2").lastChild.textContent = "We find your cabinets and paint them automatically.";
   $("fixTools").hidden = true; $("aiNote").hidden = false;
 }
+
+// Some privacy settings (Brave Shields on "strict", Firefox's resist-fingerprinting, some extensions) add
+// noise to the pixels a page reads from a photo, which would spoil the paint. Brave's default only nudges
+// a few pixels by 1-2 levels, which is harmless. Test once with a known pattern and only warn if it matters.
+const pixelNoise = (() => {
+  try {
+    const c = document.createElement("canvas"); c.width = c.height = 32;
+    const x = c.getContext("2d", { willReadFrequently: true }), want = [];
+    for (let i = 0; i < 32; i++) { const v = [i * 8, 255 - i * 8, (i * 53) % 256]; want.push(v); x.fillStyle = `rgb(${v})`; x.fillRect(i, 0, 1, 32); }
+    const d = x.getImageData(0, 0, 32, 32).data;
+    let off = 0, worst = 0;
+    for (let y = 0; y < 32; y++) for (let i = 0; i < 32; i++) {
+      const p = (y * 32 + i) * 4, e = Math.max(...[0, 1, 2].map(k => Math.abs(d[p + k] - want[i][k])));
+      if (e) off++; worst = Math.max(worst, e);
+    }
+    return { off: off / 1024, worst };
+  } catch (e) { return { off: 0, worst: 0 }; }
+})();
+if (pixelNoise.worst > 3 || pixelNoise.off > 0.05) {
+  const n = $("noiseNote");
+  n.textContent = navigator.brave
+    ? "Tip: Brave Shields are changing your photo's colours. For an accurate preview, tap the lion icon and turn Shields down for this site."
+    : "Tip: your browser's privacy settings are changing your photo's colours. For an accurate preview, allow this site to read images (or try another browser).";
+  n.hidden = false;
+  console.info("Pixel noise detected", pixelNoise);
+}
+if (BOT_CHECK) getSession().catch(e => console.warn("Bot check:", e)); // ready before the photo is
 
 buildPopular();
 updateHint();
