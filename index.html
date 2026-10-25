@@ -283,6 +283,8 @@ const CONFIG = {
 (() => {
   const q = new URLSearchParams(location.search);
   for (const k of ["brand", "accent", "defaultColor", "quoteUrl", "detectUrl"]) if (q.get(k)) CONFIG[k] = q.get(k);
+  // Short test switch: ?ai=1 turns on AI detection without pasting the long Worker address
+  if (q.get("ai") === "1") CONFIG.detectUrl = "https://cabinet-detect.tristanhulscher.workers.dev/";
 })();
 document.documentElement.style.setProperty("--accent", CONFIG.accent);
 // With AI detection the customer never has to select cabinets; the manual tools sit behind "Adjust"
