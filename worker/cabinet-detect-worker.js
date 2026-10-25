@@ -17,7 +17,7 @@ const ALLOWED_ORIGINS = [
   "http://localhost:8767",
 ];
 const ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
-const MAX_IMAGE_CHARS = 3_000_000;      // ~2.2 MB JPEG; the page sends ~1280px photos (~250 KB)
+const MAX_IMAGE_CHARS = 4_000_000;      // ~3 MB JPEG; the page sends ~2048px photos (~600 KB)
 const PER_IP_LIMIT = 40;                // requests per IP per hour: 1 to find cabinets + up to ~8 colours per photo, a few photos
 const WINDOW_MS = 60 * 60 * 1000;
 
@@ -87,9 +87,9 @@ function rateLimited(ip) {
   return false;
 }
 
-async function callModel(env, jpegB64, aspect, prompt) {
+async function callModel(env, jpegB64, aspect, prompt, size) {
   const generationConfig = { responseModalities: ["IMAGE"] };
-  if (aspect) generationConfig.imageConfig = { aspectRatio: aspect };
+  if (aspect || size) generationConfig.imageConfig = { ...(aspect && { aspectRatio: aspect }), ...(size && { imageSize: size }) };
   return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
@@ -100,9 +100,9 @@ async function callModel(env, jpegB64, aspect, prompt) {
   });
 }
 
-async function render(env, jpeg, aspect, prompt) {
-  let res = await callModel(env, jpeg, aspect, prompt);
-  if (res.status === 400 && aspect) res = await callModel(env, jpeg, null, prompt); // in case aspectRatio isn't accepted
+async function render(env, jpeg, aspect, prompt, size) {
+  let res = await callModel(env, jpeg, aspect, prompt, size);
+  if (res.status === 400 && (aspect || size)) res = await callModel(env, jpeg, null, prompt); // in case imageConfig isn't accepted
   if (!res.ok) {
     console.log("Gemini error", res.status, (await res.text()).slice(0, 300));
     return { error: `Detection service error (${res.status})` };
@@ -143,7 +143,7 @@ export default {
       if (!/^\d{4}$/.test(c.num || "") || !/^[0-9A-Fa-f]{6}$/.test(c.hex || "") || typeof c.name !== "string" || c.name.length > 60) {
         return reply({ error: "Send a Sherwin-Williams colour" }, 400, origin);
       }
-      const painted = await render(env, jpeg, aspect, paintPrompt({ num: c.num, name: c.name.replace(/[^\w\s'-]/g, ""), hex: c.hex }));
+      const painted = await render(env, jpeg, aspect, paintPrompt({ num: c.num, name: c.name.replace(/[^\w\s'-]/g, ""), hex: c.hex }), "2K"); // 2K: sharp enough for a full-screen phone view
       if (painted.error) return reply({ error: painted.error }, 502, origin);
       return reply({ image: painted.image, model: MODEL, seconds: Math.round((Date.now() - t0) / 100) / 10 }, 200, origin);
     }

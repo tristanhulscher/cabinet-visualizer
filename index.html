@@ -160,7 +160,7 @@
 <div class="app" id="app">
   <header>
     <h1 id="title">See your cabinets in a new colour</h1>
-    <p id="intro">Upload a photo of your kitchen, tap your cabinets, and try any Sherwin-Williams colour in seconds.</p>
+    <p id="intro">Upload a photo of your kitchen and see your cabinets in any Sherwin-Williams colour in seconds.</p>
   </header>
 
   <!-- Step 1: upload -->
@@ -174,7 +174,7 @@
     </label>
     <div class="tips">
       <div><b>1</b>Stand back and shoot straight on, with the lights on.</div>
-      <div id="tip2"><b>2</b>Tap each cabinet door and drawer to select it.</div>
+      <div id="tip2"><b>2</b>We find your cabinets and paint them automatically.</div>
       <div><b>3</b>Tap a colour to see it instantly. Compare before and after.</div>
     </div>
   </section>
@@ -208,7 +208,6 @@
         <button class="btn" id="showSel" aria-pressed="false" title="Highlight what's selected">Show selection</button>
         </span>
         <button class="btn" id="compare" aria-pressed="false">Before / After</button>
-        <button class="btn" id="adjust" aria-pressed="false" hidden title="Fix what gets painted">Adjust</button>
         <button class="btn" id="restart">New photo</button>
       </div>
     </div>
@@ -274,9 +273,9 @@ const CONFIG = {
   // Where quote requests go. Fill in ONE of these:
   quoteWebhook: "",                    // e.g. a HighLevel or Zapier "inbound webhook" URL (form fields are POSTed to it)
   quoteUrl: "",                        // OR a link to your existing quote page (colour is added as ?color=...)
-  detectUrl: "",                       // AI cabinet detection endpoint, e.g. https://cabinet-detect.tristanhulscher.workers.dev/ ; "" = customers tap cabinets themselves
+  detectUrl: "https://cabinet-detect.tristanhulscher.workers.dev/", // AI cabinet detection (Cloudflare Worker)
   watermark: true,                     // brand name in the corner of downloaded photos
-  maxSize: 1400                        // longest side photos are scaled to (pixels)
+  maxSize: 2000                        // longest side photos are scaled to (pixels)
 };
 /* =============================================================== */
 
@@ -389,12 +388,12 @@ function setup(img) {
   Object.assign(S, {
     w, h, orig: data, Lb: boxBlur(L, w, h, r1), Ab: boxBlur(A, w, h, r1), Bb: boxBlur(B, w, h, r1),
     Y, Yb: boxBlur(Y, w, h, r2), Yd: boxBlur(Y, w, h, Math.max(1, Math.round(Math.max(w, h) / 480))), mask: new Uint8Array(n), alpha: new Float32Array(n), history: [],
-    aiY: null, aiOK: null, aiSoft: null, aiBase: null, renders: {}, pending: new Set(), paintCount: 0, same: null, hw: null, pad: null, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
+    aiY: null, aiOK: null, aiSoft: null, aiBase: null, renders: {}, pending: new Set(), paintCount: 0, same: null, hw: null, pad: null, serviceDown: false, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
   });
   outImg = new ImageData(new Uint8ClampedArray(data), w, h);
   $("start").hidden = true; $("editor").hidden = false;
   if (!S.color) pickColor(BY_NUM[CONFIG.defaultColor] || COLORS[0]);
-  setCompare(false); setTool("wand"); updateUndo(); maskChanged(); if (AUTO) setAdjusting(false);
+  setCompare(false); setTool("wand"); updateUndo(); maskChanged();
   stage.scrollIntoView({ behavior: "smooth", block: "start" });
   if (CONFIG.detectUrl) autoDetect();
 }
@@ -413,7 +412,7 @@ function padPhoto() {
   const [aw, ah] = ASPECTS.reduce((best, a) => off(a) < off(best) ? a : best);
   let pw = S.w, ph = S.h;
   if (aw / ah > ratio) pw = Math.round(S.h * aw / ah); else ph = Math.round(S.w * ah / aw);
-  const ox = (pw - S.w) / 2, oy = (ph - S.h) / 2, k = Math.min(1, 1280 / Math.max(pw, ph));
+  const ox = (pw - S.w) / 2, oy = (ph - S.h) / 2, k = Math.min(1, 2048 / Math.max(pw, ph));
   const c = document.createElement("canvas");
   c.width = Math.round(pw * k); c.height = Math.round(ph * k);
   const cx = c.getContext("2d");
@@ -449,7 +448,8 @@ async function autoDetect() {
     if (S.autoFound) requestPaint(S.color);
   } catch (e) {
     console.warn("Cabinet detection failed:", e);
-    if (id === S.photoId) S.detectFailed = true;
+    // The service didn't answer (busy, limit, network): that's not the photo's fault, so say so
+    if (id === S.photoId) S.serviceDown = true;
   } finally {
     if (id === S.photoId) { S.detecting = false; $("busy").hidden = true; updateHint(); }
   }
@@ -802,7 +802,7 @@ stage.addEventListener("pointerdown", ev => {
   if (ev.button > 0) return;
   const p = toImage(ev);
   if (S.comparing) { drag = { mode: "split" }; setSplit(p.rx / p.rw); stage.setPointerCapture(ev.pointerId); return; }
-  if (AUTO && !S.adjusting) return; // the photo isn't editable until the customer asks to adjust
+  if (!S.comparing) return; // no tapping or painting on the photo; it's only for the before/after slider
   if (S.tool === "wand") { drag = { mode: "tap", x: ev.clientX, y: ev.clientY }; return; }
   pushHistory();
   drag = { mode: "paint", last: p };
@@ -860,7 +860,7 @@ function setCompare(on) {
   $("compare").setAttribute("aria-pressed", on);
   stage.className = "stage " + (on ? "comparing" : "tool-" + S.tool);
   ["divider", "tagBefore", "tagAfter"].forEach(id => $(id).hidden = !on);
-  stage.style.cursor = AUTO && !S.adjusting && !on ? "default" : "";
+  stage.style.cursor = on ? "" : "default";
   setSplit(on ? 0.5 : 0);
   updateHint();
 }
@@ -877,11 +877,11 @@ function updateHint() {
   if (S.tool === "brush") return hint("Paint over any cabinet areas the tap missed.");
   if (S.tool === "erase") return hint("Paint over countertops, handles or walls that shouldn't change.");
   if (S.detecting) return hint("🔍 Finding your cabinets. This takes about 30 seconds, so hang tight…");
-  if (AUTO && S.adjusting) return hint("Tap a spot the AI missed to add it, use <b>Brush</b> and <b>Erase</b> for fine fixes, then tap <b>Done</b>.");
   if (AUTO && S.autoFound && S.paintCount >= MAX_RENDERS && !S.renders[S.color.num])
     return hint(`Showing a quick preview of <b>${S.color.name}</b>. You've seen ${MAX_RENDERS} photo-real colours for this photo; ask us for a free quote to see more.`);
   if (AUTO && S.autoFound) return hint(`Your cabinets are shown in <b>${S.color.name}</b>. Pick any colour to try it.`);
-  if (AUTO && S.detectFailed) return hint("We couldn't find the cabinets in this photo. Try one taken straight on with the lights on, or tap <b>Adjust</b> to paint them yourself.", true);
+  if (S.serviceDown) return hint("Our visualizer is busy right now. Please try again in a few minutes.", true);
+  if (S.detectFailed) return hint("We couldn't find the cabinets in this photo. Try another one taken straight on, with the lights on and the cabinets filling most of the picture.", true);
   if (S.detectFailed && !S.selected) return hint("We couldn't spot the cabinets automatically. <b>Tap each cabinet door</b> to paint it.", true);
   if (!S.selected) return hint("👆 <b>Tap a cabinet door</b> to paint it. Then tap each of the others.");
   hint("Keep tapping doors and drawers to add them. Spilled onto the wall? <b>Undo</b>, lower <b>Spread</b>, or use <b>Erase</b>.");
@@ -1007,17 +1007,7 @@ if (parent !== window && "ResizeObserver" in window) {
 if (AUTO) {
   $("intro").textContent = "Upload a photo of your kitchen and see your cabinets in any Sherwin-Williams colour in seconds.";
   $("tip2").lastChild.textContent = "We find your cabinets and paint them automatically.";
-  $("fixTools").hidden = true; $("adjust").hidden = false; $("aiNote").hidden = false;
-}
-$("adjust").onclick = () => setAdjusting(!S.adjusting);
-function setAdjusting(on) {
-  S.adjusting = on;
-  if (on && S.comparing) setCompare(false);
-  $("fixTools").hidden = AUTO && !on;
-  $("adjust").textContent = on ? "Done" : "Adjust";
-  $("adjust").setAttribute("aria-pressed", on);
-  stage.style.cursor = AUTO && !on && !S.comparing ? "default" : "";
-  updateHint();
+  $("fixTools").hidden = true; $("aiNote").hidden = false;
 }
 
 buildPopular();
