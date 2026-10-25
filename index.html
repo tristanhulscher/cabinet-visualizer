@@ -273,7 +273,7 @@ const CONFIG = {
   // Where quote requests go. Fill in ONE of these:
   quoteWebhook: "",                    // e.g. a HighLevel or Zapier "inbound webhook" URL (form fields are POSTed to it)
   quoteUrl: "",                        // OR a link to your existing quote page (colour is added as ?color=...)
-  detectUrl: "",                       // AI cabinet detection endpoint; empty = customers tap cabinets themselves
+  detectUrl: "https://cabinet-detect.tristanhulscher.workers.dev/", // AI cabinet detection (Cloudflare Worker); "" = customers tap cabinets themselves
   watermark: true,                     // brand name in the corner of downloaded photos
   maxSize: 1400                        // longest side photos are scaled to (pixels)
 };
