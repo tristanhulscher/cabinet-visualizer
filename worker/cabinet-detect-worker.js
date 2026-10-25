@@ -19,7 +19,7 @@ const ALLOWED_ORIGINS = [
 const ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
 const MAX_IMAGE_CHARS = 4_000_000;      // ~3 MB JPEG; the page sends ~2048px photos (~600 KB)
 const FIND_LIMIT = 10;                  // photo uploads per visitor per hour
-const PAINT_LIMIT = 8;                  // colour renders per visitor per day (the page allows 5; a little slack for retries)
+const PAINT_LIMIT = 18;                 // colour renders per visitor per day (page allows 5 colours x up to 3 angles, plus retries)
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
 
 const PROMPT = `Edit this photo for a cabinet-painting preview.
