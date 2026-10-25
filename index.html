@@ -481,6 +481,7 @@ function updatePhotos() {
 // magenta pixel is cabinet. The photo is padded out to a shape the AI draws natively and trimmed
 // back afterwards, so its answer lines up with the photo pixel for pixel.
 const ASPECTS = [[1, 1], [2, 3], [3, 2], [3, 4], [4, 3], [4, 5], [5, 4], [9, 16], [16, 9], [21, 9]];
+const ALIGN_MIN = 0.65; // edge alignment: good renders measured 0.78-0.88, 8px shift ~0.53, 5% zoom ~0.35
 const DRIFT_LIMIT = 12; // avg change outside the cabinets: a correct answer measured ~4, a 15px shift ~16
 
 // The photo is padded to a shape the AI draws natively and trimmed back afterwards, so its answers
@@ -514,16 +515,22 @@ async function autoDetect() {
   st.detecting = true; $("busy").hidden = false; updateHint(); updatePhotos();
   try {
     st.pad = padPhoto();
-    const res = await fetch(CONFIG.detectUrl, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: st.pad.image, aspect: st.pad.aspect })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || res.status);
-    if (!photos.includes(st)) return; // started over meanwhile
-    const [found, coat] = await Promise.all([st.pad.unpad(data.image), data.grey ? st.pad.unpad(data.grey).catch(() => null) : null]);
-    if (!photos.includes(st)) return;
-    withState(st, () => applyMagenta(found, coat));
+    // The AI occasionally returns a shifted or redrawn picture; the checks in applyMagenta reject it,
+    // and one more try usually comes back clean
+    for (let attempt = 0; attempt < 2; attempt++) {
+      st.detectFailed = false;
+      const res = await fetch(CONFIG.detectUrl, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: st.pad.image, aspect: st.pad.aspect })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.status);
+      if (!photos.includes(st)) return; // started over meanwhile
+      const [found, coat] = await Promise.all([st.pad.unpad(data.image), data.grey ? st.pad.unpad(data.grey).catch(() => null) : null]);
+      if (!photos.includes(st)) return;
+      withState(st, () => applyMagenta(found, coat));
+      if (st.autoFound) break;
+    }
     if (st.autoFound) {
       // Colours already chosen on other angles render here too; the current colour starts right away
       for (const c of G.saved) paintFor(st, c);
@@ -556,7 +563,11 @@ function applyMagenta(ed, coat) {
   }
   drift = samples ? drift / samples : 0;
   console.info(`Cabinet detection: ${(100 * found / n).toFixed(1)}% cabinet, drift ${drift.toFixed(1)}`);
-  if (found < n * 0.01 || drift > DRIFT_LIMIT) { S.detectFailed = true; return; }
+  // Too different outside the cabinets: either the AI moved things (edges don't line up) or it just
+  // re-lit the room (edges still line up, which is fine)
+  const align = drift > DRIFT_LIMIT ? renderAlign(S, ed, mask) : 1;
+  if (drift > DRIFT_LIMIT) console.info(`Cabinet detection: edge alignment ${align.toFixed(2)}`);
+  if (found < n * 0.01 || align < ALIGN_MIN) { S.detectFailed = true; return; }
   // Cabinets are large connected areas: drop stray specks (reflections in ovens, chrome), and fill
   // pinholes too small to be a knob
   keepRegions(mask, 1, n * 0.002);
@@ -695,14 +706,23 @@ async function paintFor(st, c) {
   if (!st.autoFound || !st.pad || st.renders[c.num] || st.renderPending.has(c.num)) return;
   st.renderPending.add(c.num); updateBadge();
   try {
-    const res = await fetch(CONFIG.detectUrl, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: st.pad.image, aspect: st.pad.aspect, mode: "paint", color: { num: c.num, name: c.name, hex: c.hex.slice(1) } })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || res.status);
-    const px = await st.pad.unpad(data.image);
-    if (!photos.includes(st)) return;
+    // A colour render must line up with the photo too: if the AI shifted or redrew the room, the paint
+    // would land beside the real cabinets. Check outside the cabinets, retry once, else keep the preview.
+    let px = null;
+    for (let attempt = 0; attempt < 2 && !px; attempt++) {
+      const res = await fetch(CONFIG.detectUrl, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: st.pad.image, aspect: st.pad.aspect, mode: "paint", color: { num: c.num, name: c.name, hex: c.hex.slice(1) } })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.status);
+      const cand = await st.pad.unpad(data.image);
+      if (!photos.includes(st)) return;
+      const align = renderAlign(st, cand);
+      console.info(`Colour render ${c.num}: edge alignment ${align.toFixed(2)}`);
+      if (align >= ALIGN_MIN) px = cand;
+    }
+    if (!px) throw new Error("colour render didn't line up with the photo");
     st.renders[c.num] = withState(st, () => correctRender(px, c));
     if (G.pending.has(c.num)) { G.pending.delete(c.num); G.saved.push(c); }
     if (S === st && S.color.num === c.num) render();
@@ -714,6 +734,28 @@ async function paintFor(st, c) {
     if (G.pending.has(c.num) && !photos.some(p => p.renderPending.has(c.num))) G.pending.delete(c.num);
     updateBadge(); updateSaved(); updateHint();
   }
+}
+
+// How well a render's edges line up with the photo's, outside the cabinets (1 = perfectly, 0 = not
+// at all). Edges ignore the overall re-lighting the AI does, so this only drops when it moved things.
+function renderAlign(st, px, cab) {
+  const { w, h, orig } = st, f = 3, W = Math.floor(w / f), H = Math.floor(h / f);
+  const near = boxBlur(Float32Array.from(cab || st.aiOK), w, h, 6);
+  const lum = (src, x, y) => { const p = (y * f * w + x * f) * 4; return src[p] * 0.3 + src[p + 1] * 0.59 + src[p + 2] * 0.11; };
+  const ga = new Float32Array(W * H), gb = new Float32Array(W * H), use = new Uint8Array(W * H);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x;
+    use[i] = near[y * f * w + x * f] === 0 ? 1 : 0;
+    ga[i] = Math.abs(lum(orig, x + 1, y) - lum(orig, x - 1, y)) + Math.abs(lum(orig, x, y + 1) - lum(orig, x, y - 1));
+    gb[i] = Math.abs(lum(px, x + 1, y) - lum(px, x - 1, y)) + Math.abs(lum(px, x, y + 1) - lum(px, x, y - 1));
+  }
+  let n = 0, sa = 0, sb = 0;
+  for (let i = 0; i < W * H; i++) if (use[i]) { n++; sa += ga[i]; sb += gb[i]; }
+  if (n < 500) return 1; // almost all cabinet: nothing to compare, trust it
+  const ma = sa / n, mb = sb / n;
+  let cov = 0, va = 0, vb = 0;
+  for (let i = 0; i < W * H; i++) if (use[i]) { const a = ga[i] - ma, b = gb[i] - mb; cov += a * b; va += a * a; vb += b * b; }
+  return cov / Math.sqrt(va * vb || 1);
 }
 
 // Small picture of the customer's own kitchen in a saved colour, for the "Your colours" strip
