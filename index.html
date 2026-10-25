@@ -783,17 +783,30 @@ function correctRender(px, c) {
   const out = new Uint8ClampedArray(n * 4);
   // Where the AI left the photo as it was (dishes behind glass, open shelves, handles), keep the photo:
   // only what it actually repainted is paint
-  // Colour difference, not brightness: navy over dark wood is about as dark, but a different colour
-  const changed = new Float32Array(n), { Lb, Ab, Bb } = S;
+  // Colour difference, not brightness: navy over dark wood is about as dark, but a different colour.
+  // Where the AI skipped a spot: if it still looks like the old cabinet finish, the AI just missed it,
+  // so we paint it ourselves (from the primer-coat shading); if it looks like anything else (dishes
+  // behind glass, open-shelf contents), it isn't cabinet and keeps the photo.
+  const changed = new Float32Array(n), own = new Uint8Array(n), { Lb, Ab, Bb } = S;
+  const fa = new Uint32Array(512), fb = new Uint32Array(512); let fn = 0;
+  for (let i = 0; i < n; i++) if (aiBase[i]) { fa[Math.max(0, Math.min(511, Math.round(Ab[i] * 2) + 256))]++; fb[Math.max(0, Math.min(511, Math.round(Bb[i] * 2) + 256))]++; fn++; }
+  const med = h2 => { let acc = 0; for (let i = 0; i < 512; i++) { acc += h2[i]; if (acc >= fn / 2) return (i - 256) / 2; } return 0; };
+  const finA = med(fa), finB = med(fb);
   for (let i = 0; i < n; i++) {
-    if (aiOK[i]) changed[i] = Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) > 12 ? 1 : 0;
+    if (!aiOK[i]) continue;
+    if (Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) > 12) changed[i] = 1;
+    else if (aiBase[i] && Math.hypot(Ab[i] - finA, Bb[i] - finB) < 10) { changed[i] = 1; own[i] = 1; }
   }
   const keep = boxBlur(changed, w, h, 1);
+  const ownL = rgbToLab(...hexRgb(c.hex))[0];
   for (let i = 0; i < n; i++) {
     if (!aiOK[i]) continue;
     const broad = (den[i] > 0.05 ? num[i] / den[i] : L[i]) * k, fine = L[i] * k - broad;
     const lifted = broad < litK ? litK - (litK - broad) * 0.65 : broad;
-    const rgb = labToRgb(Math.min(100, Math.max(0, lifted + fine)), A[i] + t[1] - mA, B[i] + t[2] - mB);
+    // A spot the AI missed: the exact chip colour, shaded like the primer coat
+    const rgb = own[i]
+      ? labToRgb(Math.min(100, Math.max(0, ownL * Math.pow(Math.min(2.5, Math.max(0.15, S.aiY[i] / S.aiMean)), 0.45))), t[1], t[2])
+      : labToRgb(Math.min(100, Math.max(0, lifted + fine)), A[i] + t[1] - mA, B[i] + t[2] - mB);
     out[i * 4] = rgb[0]; out[i * 4 + 1] = rgb[1]; out[i * 4 + 2] = rgb[2]; out[i * 4 + 3] = Math.round(keep[i] * 255);
   }
   return out;
