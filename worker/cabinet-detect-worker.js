@@ -2,14 +2,15 @@
 //
 // The visualizer page POSTs {image: "data:image/jpeg;base64,...", aspect: "4:3"} here. This Worker
 // adds the secret Gemini API key and asks Google's image-editing model to repaint ONLY the cabinets
-// in flat magenta. It returns {image: "data:image/png;base64,...", seconds}; the page treats every
-// magenta pixel as cabinet and paints the real Sherwin-Williams colour there itself.
+// in flat magenta, and (at the same time) in an even grey final coat. It returns
+// {image, grey, seconds}: the page treats every magenta pixel as cabinet, takes light and shadow from
+// the grey coat, and paints the real Sherwin-Williams colour there itself.
 // The key never reaches the browser.
 //
 // Setup (Cloudflare dashboard): Workers & Pages -> cabinet-detect -> Edit code -> paste this file -> Deploy.
 // The key is a Secret named GEMINI_API_KEY (Settings -> Variables and Secrets).
 
-const MODEL = "gemini-3-pro-image"; // "Nano Banana Pro": kept glass panes intact where Nano Banana 2 painted over them
+const MODEL = "gemini-3.1-flash-image"; // "Nano Banana 2": matched or beat Pro on test kitchens at a fraction of the cost
 const ALLOWED_ORIGINS = [
   "https://tristanhulscher.github.io",
   "http://localhost:8766",
@@ -24,6 +25,20 @@ const PROMPT = `Edit this photo for a cabinet-painting preview.
 Repaint ONLY the cabinetry in a flat, solid, fully saturated magenta (#FF00FF): every cabinet door,
 drawer front, cabinet box, end panel, face frame, filler, toe kick, crown moulding on cabinets, and
 the sides and back of any island or peninsula cabinetry. Cover the whole cabinet surface, edge to edge.
+
+Do NOT change anything else, not even slightly: keep walls, ceiling, countertops, backsplash, tile,
+appliances, range hood, sink, faucet, windows, floor, lights, handles and knobs, glass panes in doors,
+and every object exactly as they are. Keep the same framing, size and perspective; do not crop,
+zoom, straighten or re-light the photo. Grey borders around the photo must stay grey.`;
+
+// Second render: the cabinets in an even mid-grey final coat. The page takes the light and shadow from
+// it and tints it to the exact Sherwin-Williams colour, so the paint looks like a real photo
+const GREY_PROMPT = `Edit this photo for a cabinet-painting preview.
+Repaint ONLY the cabinetry as if a professional painter just finished the final coat in an even,
+solid, medium neutral grey (#808080) satin paint: every cabinet door, drawer front, cabinet box,
+end panel, face frame, filler, toe kick, crown moulding on cabinets, and the sides of any island or
+peninsula cabinetry. Fully hide the old finish and wood grain. Keep the real lighting, shadows,
+panel profiles and edges of the cabinets so it looks like a real photo.
 
 Do NOT change anything else, not even slightly: keep walls, ceiling, countertops, backsplash, tile,
 appliances, range hood, sink, faucet, windows, floor, lights, handles and knobs, glass panes in doors,
@@ -58,17 +73,34 @@ function rateLimited(ip) {
   return false;
 }
 
-async function callModel(env, jpegB64, aspect) {
+async function callModel(env, jpegB64, aspect, prompt) {
   const generationConfig = { responseModalities: ["IMAGE"] };
   if (aspect) generationConfig.imageConfig = { aspectRatio: aspect };
   return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
     body: JSON.stringify({
-      contents: [{ parts: [{ inline_data: { mime_type: "image/jpeg", data: jpegB64 } }, { text: PROMPT }] }],
+      contents: [{ parts: [{ inline_data: { mime_type: "image/jpeg", data: jpegB64 } }, { text: prompt }] }],
       generationConfig,
     }),
   });
+}
+
+async function render(env, jpeg, aspect, prompt) {
+  let res = await callModel(env, jpeg, aspect, prompt);
+  if (res.status === 400 && aspect) res = await callModel(env, jpeg, null, prompt); // in case aspectRatio isn't accepted
+  if (!res.ok) {
+    console.log("Gemini error", res.status, (await res.text()).slice(0, 300));
+    return { error: `Detection service error (${res.status})` };
+  }
+  const data = await res.json();
+  const img = (data.candidates?.[0]?.content?.parts || []).find(p => (p.inlineData || p.inline_data)?.data);
+  if (!img) {
+    console.log("No image in answer", JSON.stringify(data).slice(0, 300));
+    return { error: "The detection service returned no image" };
+  }
+  const inline = img.inlineData || img.inline_data;
+  return { image: `data:${inline.mimeType || inline.mime_type || "image/png"};base64,${inline.data}` };
 }
 
 export default {
@@ -92,23 +124,12 @@ export default {
     const jpeg = image.slice(image.indexOf(",") + 1);
 
     const t0 = Date.now();
-    let res = await callModel(env, jpeg, aspect);
-    if (res.status === 400 && aspect) res = await callModel(env, jpeg, null); // in case aspectRatio isn't accepted
-    if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300);
-      console.log("Gemini error", res.status, detail);
-      return reply({ error: `Detection service error (${res.status})` }, 502, origin);
-    }
-    const data = await res.json();
-    const parts = data.candidates?.[0]?.content?.parts || [];
-    const img = parts.find(p => (p.inlineData || p.inline_data)?.data);
-    if (!img) {
-      console.log("No image in answer", JSON.stringify(data).slice(0, 300));
-      return reply({ error: "The detection service returned no image" }, 502, origin);
-    }
-    const inline = img.inlineData || img.inline_data;
+    // Both renders at once: magenta says where the cabinets are, grey says how the paint should look
+    const [found, coat] = await Promise.all([render(env, jpeg, aspect, PROMPT), render(env, jpeg, aspect, GREY_PROMPT)]);
+    if (found.error) return reply({ error: found.error }, 502, origin);
     return reply({
-      image: `data:${inline.mimeType || inline.mime_type || "image/png"};base64,${inline.data}`,
+      image: found.image,
+      grey: coat.image || null, // the page falls back to its own shading if this one failed
       model: MODEL,
       seconds: Math.round((Date.now() - t0) / 100) / 10,
     }, 200, origin);

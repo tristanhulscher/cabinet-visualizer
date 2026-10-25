@@ -388,7 +388,7 @@ function setup(img) {
   Object.assign(S, {
     w, h, orig: data, Lb: boxBlur(L, w, h, r1), Ab: boxBlur(A, w, h, r1), Bb: boxBlur(B, w, h, r1),
     Y, Yb: boxBlur(Y, w, h, r2), Yd: boxBlur(Y, w, h, Math.max(1, Math.round(Math.max(w, h) / 480))), mask: new Uint8Array(n), alpha: new Float32Array(n), history: [],
-    aiY: null, aiOK: null, aiCore: null, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
+    aiY: null, aiOK: null, aiSoft: null, aiBase: null, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
   });
   outImg = new ImageData(new Uint8ClampedArray(data), w, h);
   $("start").hidden = true; $("editor").hidden = false;
@@ -426,14 +426,19 @@ async function autoDetect() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
     if (id !== S.photoId) return; // a new photo was loaded meanwhile
-    const img = new Image();
-    await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = data.image; });
-    // Back to the photo's own frame: scale the answer to the padded size and cut the padding off
-    const m = document.createElement("canvas"); m.width = S.w; m.height = S.h;
-    const mx = m.getContext("2d", { willReadFrequently: true });
-    const sx = img.naturalWidth / pw, sy = img.naturalHeight / ph;
-    mx.drawImage(img, ox * sx, oy * sy, S.w * sx, S.h * sy, 0, 0, S.w, S.h);
-    applyMagenta(mx.getImageData(0, 0, S.w, S.h).data);
+    // Back to the photo's own frame: scale each answer to the padded size and cut the padding off
+    const unpad = async src => {
+      const img = new Image();
+      await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = src; });
+      const m = document.createElement("canvas"); m.width = S.w; m.height = S.h;
+      const mx = m.getContext("2d", { willReadFrequently: true });
+      const sx = img.naturalWidth / pw, sy = img.naturalHeight / ph;
+      mx.drawImage(img, ox * sx, oy * sy, S.w * sx, S.h * sy, 0, 0, S.w, S.h);
+      return mx.getImageData(0, 0, S.w, S.h).data;
+    };
+    const [found, coat] = await Promise.all([unpad(data.image), data.grey ? unpad(data.grey).catch(() => null) : null]);
+    if (id !== S.photoId) return;
+    applyMagenta(found, coat);
   } catch (e) {
     console.warn("Cabinet detection failed:", e);
     if (id === S.photoId) S.detectFailed = true;
@@ -442,7 +447,7 @@ async function autoDetect() {
   }
 }
 
-function applyMagenta(ed) {
+function applyMagenta(ed, coat) {
   const { w, h, orig } = S, n = w * h, mask = new Uint8Array(n);
   let drift = 0, samples = 0, found = 0;
   for (let i = 0, p = 0; i < n; i++, p += 4) {
@@ -462,29 +467,91 @@ function applyMagenta(ed) {
   // pinholes too small to be a knob
   keepRegions(mask, 1, n * 0.002);
   keepRegions(mask, 0, n * 0.00004);
-  const core = mask.slice();
-  // Reach one pixel past the AI's edge (at half strength) so the blend lands on the wall, not on a
-  // rim of old finish
-  const f = boxBlur(Float32Array.from(mask), w, h, 1);
-  for (let i = 0; i < n; i++) mask[i] = f[i] > 0.001 ? 1 : 0;
-  // Light and shadow for the new paint come from the AI's own render of the painted cabinets:
-  // it has the door shapes and room lighting but none of the old finish's grain or glare
-  const s = new Float32Array(n);
-  for (let i = 0, p = 0; i < n; i++, p += 4) s[i] = LIN[(ed[p] + ed[p + 2]) >> 1] * core[i];
-  const cf = Float32Array.from(core);
-  const num = boxBlur(s, w, h, 4), den = boxBlur(cf, w, h, 4), sm = boxBlur(s, w, h, 1), sd = boxBlur(cf, w, h, 1);
-  const aiY = new Float32Array(n);
+  let core = mask;
+  if (coat) core = growToCoat(core, coat);
+  const soft = snapEdges(core);
+  // Light and shadow for the new paint come from the AI's grey final coat (or, without one, from its
+  // magenta render): door shapes and room lighting, none of the old finish's grain or glare
+  const s = new Float32Array(n), cf = Float32Array.from(core);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    s[i] = core[i] * (coat ? LIN[coat[p]] * 0.2126 + LIN[coat[p + 1]] * 0.7152 + LIN[coat[p + 2]] * 0.0722 : LIN[(ed[p] + ed[p + 2]) >> 1]);
+  }
+  const rb = Math.max(4, Math.round(Math.max(w, h) / 220)) + 2;
+  const num = boxBlur(s, w, h, rb), den = boxBlur(cf, w, h, rb), sm = boxBlur(s, w, h, 1), sd = boxBlur(cf, w, h, 1);
+  const aiY = new Float32Array(n), aiOK = new Uint8Array(n), base = new Uint8Array(n);
   let sum = 0, cnt = 0;
   for (let i = 0; i < n; i++) {
-    if (!mask[i]) continue;
+    base[i] = soft[i] > 0.5 ? 1 : 0;
     // Averages count cabinet pixels only, so edges don't pick up darkness from outside
-    aiY[i] = core[i] ? sm[i] / sd[i] : (den[i] > 0.01 ? num[i] / den[i] : 0);
-    if (core[i]) { sum += aiY[i]; cnt++; }
+    if (core[i]) { aiY[i] = sm[i] / sd[i]; aiOK[i] = 1; sum += aiY[i]; cnt++; }
+    else if (den[i] > 0.01) { aiY[i] = num[i] / den[i]; aiOK[i] = 1; }
   }
-  Object.assign(S, { aiY, aiOK: mask.slice(), aiCore: core, aiMean: cnt ? sum / cnt : 0.2 });
+  Object.assign(S, { aiY, aiOK, aiSoft: soft, aiBase: base, aiMean: cnt ? sum / cnt : 0.2 });
   pushHistory();
-  S.mask = mask; S.autoFound = true;
+  S.mask = base.slice(); S.autoFound = true;
   maskChanged();
+}
+
+// The grey coat often covers a little more of the real cabinet than the magenta pass (mouldings,
+// edges). Add neutral grey pixels that differ from the photo, in a thin band, connected to the cabinet
+function growToCoat(core, coat) {
+  const { w, h, orig } = S, n = w * h, r = Math.max(3, Math.round(Math.max(w, h) * 0.007));
+  const ring = boxBlur(Float32Array.from(core), w, h, r), cand = new Uint8Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    if (core[i]) { cand[i] = 1; continue; }
+    const R = coat[p], G = coat[p + 1], B = coat[p + 2];
+    const chroma = Math.max(R, G, B) - Math.min(R, G, B);
+    const changed = (Math.abs(R - orig[p]) + Math.abs(G - orig[p + 1]) + Math.abs(B - orig[p + 2])) / 3;
+    if (ring[i] > 0.001 && chroma < 22 && changed > 18) cand[i] = 1;
+  }
+  const out = core.slice(), stack = new Int32Array(n);
+  let sp = 0;
+  for (let i = 0; i < n; i++) if (core[i]) stack[sp++] = i;
+  while (sp) {
+    const i = stack[--sp], x = i % w;
+    for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) {
+      if (j < 0 || j >= n || out[j] || !cand[j]) continue;
+      out[j] = 1; stack[sp++] = j;
+    }
+  }
+  keepRegions(out, 0, n * 0.00004);
+  return out;
+}
+
+// Snap the outline to the photo's own edges (colour-guided filter): the AI answers at a lower
+// resolution and its edge can sit a few pixels off, which leaves rims of old finish or jagged lines.
+// Returns a soft 0..1 coverage per pixel.
+function snapEdges(core) {
+  const { w, h, orig } = S, n = w * h, r = Math.max(4, Math.round(Math.max(w, h) / 220)), eps = 1e-3;
+  const R = new Float32Array(n), G = new Float32Array(n), B = new Float32Array(n), P = Float32Array.from(core);
+  for (let i = 0, p = 0; i < n; i++, p += 4) { R[i] = orig[p] / 255; G[i] = orig[p + 1] / 255; B[i] = orig[p + 2] / 255; }
+  const bl = a => boxBlur(a, w, h, r), prod = (a, b) => { const o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = a[i] * b[i]; return o; };
+  const mR = bl(R), mG = bl(G), mB = bl(B), mP = bl(P);
+  const cR = bl(prod(R, P)), cG = bl(prod(G, P)), cB = bl(prod(B, P));
+  const vRR = bl(prod(R, R)), vRG = bl(prod(R, G)), vRB = bl(prod(R, B)), vGG = bl(prod(G, G)), vGB = bl(prod(G, B)), vBB = bl(prod(B, B));
+  const aR = new Float32Array(n), aG = new Float32Array(n), aB = new Float32Array(n), b0 = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const rr = vRR[i] - mR[i] * mR[i] + eps, rg = vRG[i] - mR[i] * mG[i], rb = vRB[i] - mR[i] * mB[i];
+    const gg = vGG[i] - mG[i] * mG[i] + eps, gb = vGB[i] - mG[i] * mB[i], bb = vBB[i] - mB[i] * mB[i] + eps;
+    const xR = cR[i] - mR[i] * mP[i], xG = cG[i] - mG[i] * mP[i], xB = cB[i] - mB[i] * mP[i];
+    // Inverse of the symmetric 3x3 covariance, by cofactors
+    const c00 = gg * bb - gb * gb, c01 = rb * gb - rg * bb, c02 = rg * gb - rb * gg;
+    const c11 = rr * bb - rb * rb, c12 = rb * rg - rr * gb, c22 = rr * gg - rg * rg;
+    const det = rr * c00 + rg * c01 + rb * c02 || 1e-12;
+    aR[i] = (c00 * xR + c01 * xG + c02 * xB) / det;
+    aG[i] = (c01 * xR + c11 * xG + c12 * xB) / det;
+    aB[i] = (c02 * xR + c12 * xG + c22 * xB) / det;
+    b0[i] = mP[i] - aR[i] * mR[i] - aG[i] * mG[i] - aB[i] * mB[i];
+  }
+  const qR = bl(aR), qG = bl(aG), qB = bl(aB), qb = bl(b0);
+  // Only within r pixels of the AI's edge; elsewhere keep its answer
+  const near = bl(P), soft = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (near[i] < 0.001 || near[i] > 0.999) { soft[i] = core[i]; continue; }
+    const q = qR[i] * R[i] + qG[i] * G[i] + qB[i] * B[i] + qb[i];
+    soft[i] = Math.min(1, Math.max(0, (q - 0.35) / 0.3)); // sharpen back into a crisp edge, no glow where the photo's edge is faint
+  }
+  return soft;
 }
 
 // Flip connected areas of `value` smaller than minSize pixels to the other value
@@ -554,7 +621,8 @@ const brushRadius = () => (+$("size").value / 1000) * Math.max(S.w, S.h);
 function maskChanged() {
   const { w, h, mask, Yb } = S, n = w * h;
   S.alpha = boxBlur(Float32Array.from(mask), w, h, 1);
-  if (S.aiCore) for (let i = 0; i < n; i++) if (mask[i] && S.aiOK[i] && !S.aiCore[i]) S.alpha[i] *= 0.5;
+  // Where the selection is still what the AI found, use its edge-snapped soft coverage
+  if (S.aiSoft) for (let i = 0; i < n; i++) if (mask[i] === S.aiBase[i]) S.alpha[i] = S.aiSoft[i];
   let sum = 0, cnt = 0;
   for (let i = 0; i < n; i++) if (mask[i]) { sum += Yb[i]; cnt++; }
   S.yMean = cnt ? sum / cnt : 0.2;
