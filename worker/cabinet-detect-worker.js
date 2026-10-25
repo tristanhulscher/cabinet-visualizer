@@ -18,7 +18,7 @@ const ALLOWED_ORIGINS = [
 ];
 const ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
 const MAX_IMAGE_CHARS = 3_000_000;      // ~2.2 MB JPEG; the page sends ~1280px photos (~250 KB)
-const PER_IP_LIMIT = 15;                // detections per IP per window (best effort, per Worker instance)
+const PER_IP_LIMIT = 40;                // requests per IP per hour: 1 to find cabinets + up to ~8 colours per photo, a few photos
 const WINDOW_MS = 60 * 60 * 1000;
 
 const PROMPT = `Edit this photo for a cabinet-painting preview.
@@ -44,6 +44,20 @@ Do NOT change anything else, not even slightly: keep walls, ceiling, countertops
 appliances, range hood, sink, faucet, windows, floor, lights, handles and knobs, glass panes in doors,
 and every object exactly as they are. Keep the same framing, size and perspective; do not crop,
 zoom, straighten or re-light the photo. Grey borders around the photo must stay grey.`;
+
+// Third kind of render, one per colour the customer picks: the cabinets painted in that actual
+// Sherwin-Williams colour. The page keeps only the cabinets from it and corrects it to the exact chip
+const paintPrompt = c => `Edit this photo to show what this kitchen would look like after a professional cabinet painter
+finished the job. Repaint ONLY the cabinetry in Sherwin-Williams ${c.num} ${c.name} (hex #${c.hex}), smooth satin
+finish, final coat: every cabinet door, drawer front, cabinet box, end panel, face frame, filler, toe
+kick, crown moulding on cabinets, and island or peninsula cabinetry. Fully hide the old finish and wood
+grain. Keep crisp, realistic detail on door profiles and edges, with the room's natural light and
+shadows so it looks like a real photograph. Use a smooth low-sheen finish: no mirror-like
+reflections, no window reflections, no light streaks or glare on the doors.
+
+Do NOT change anything else: keep walls, ceiling, countertops, backsplash, appliances, range hood, sink,
+faucet, windows, floor, lights, handles and knobs, and every object exactly as they are. Keep the same
+framing, size and perspective. Grey borders around the photo must stay grey.`;
 
 const hits = new Map(); // ip -> [timestamps]
 
@@ -124,6 +138,15 @@ export default {
     const jpeg = image.slice(image.indexOf(",") + 1);
 
     const t0 = Date.now();
+    if (body.mode === "paint") {
+      const c = body.color || {};
+      if (!/^\d{4}$/.test(c.num || "") || !/^[0-9A-Fa-f]{6}$/.test(c.hex || "") || typeof c.name !== "string" || c.name.length > 60) {
+        return reply({ error: "Send a Sherwin-Williams colour" }, 400, origin);
+      }
+      const painted = await render(env, jpeg, aspect, paintPrompt({ num: c.num, name: c.name.replace(/[^\w\s'-]/g, ""), hex: c.hex }));
+      if (painted.error) return reply({ error: painted.error }, 502, origin);
+      return reply({ image: painted.image, model: MODEL, seconds: Math.round((Date.now() - t0) / 100) / 10 }, 200, origin);
+    }
     // Both renders at once: magenta says where the cabinets are, grey says how the paint should look
     const [found, coat] = await Promise.all([render(env, jpeg, aspect, PROMPT), render(env, jpeg, aspect, GREY_PROMPT)]);
     if (found.error) return reply({ error: found.error }, 502, origin);

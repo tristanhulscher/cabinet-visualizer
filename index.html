@@ -186,6 +186,7 @@
         <canvas id="before"></canvas>
         <canvas id="after"></canvas>
         <div class="cursor" id="cursor" hidden></div>
+        <div class="tag" id="hd" style="left:10px;top:auto;bottom:10px" hidden>✨ Making it photo-real…</div>
         <div class="busy" id="busy" hidden><span class="tag" style="position:static;font-size:15px;padding:8px 16px">🔍 Finding your cabinets…</span></div>
         <div class="divider" id="divider" hidden><span>⇔</span></div>
         <div class="tag" id="tagBefore" style="left:10px" hidden>Before</div>
@@ -388,7 +389,7 @@ function setup(img) {
   Object.assign(S, {
     w, h, orig: data, Lb: boxBlur(L, w, h, r1), Ab: boxBlur(A, w, h, r1), Bb: boxBlur(B, w, h, r1),
     Y, Yb: boxBlur(Y, w, h, r2), Yd: boxBlur(Y, w, h, Math.max(1, Math.round(Math.max(w, h) / 480))), mask: new Uint8Array(n), alpha: new Float32Array(n), history: [],
-    aiY: null, aiOK: null, aiSoft: null, aiBase: null, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
+    aiY: null, aiOK: null, aiSoft: null, aiBase: null, renders: {}, pending: new Set(), paintCount: 0, same: null, hw: null, pad: null, autoFound: false, photoId: (S.photoId || 0) + 1, detecting: false, detectFailed: false
   });
   outImg = new ImageData(new Uint8ClampedArray(data), w, h);
   $("start").hidden = true; $("editor").hidden = false;
@@ -405,40 +406,47 @@ function setup(img) {
 const ASPECTS = [[1, 1], [2, 3], [3, 2], [3, 4], [4, 3], [4, 5], [5, 4], [9, 16], [16, 9], [21, 9]];
 const DRIFT_LIMIT = 12; // avg change outside the cabinets: a correct answer measured ~4, a 15px shift ~16
 
+// The photo is padded to a shape the AI draws natively and trimmed back afterwards, so its answers
+// line up with the photo pixel for pixel. Built once per photo and reused for every request.
+function padPhoto() {
+  const ratio = S.w / S.h, off = a => Math.abs(Math.log(a[0] / a[1] / ratio));
+  const [aw, ah] = ASPECTS.reduce((best, a) => off(a) < off(best) ? a : best);
+  let pw = S.w, ph = S.h;
+  if (aw / ah > ratio) pw = Math.round(S.h * aw / ah); else ph = Math.round(S.w * ah / aw);
+  const ox = (pw - S.w) / 2, oy = (ph - S.h) / 2, k = Math.min(1, 1280 / Math.max(pw, ph));
+  const c = document.createElement("canvas");
+  c.width = Math.round(pw * k); c.height = Math.round(ph * k);
+  const cx = c.getContext("2d");
+  cx.fillStyle = "#808080"; cx.fillRect(0, 0, c.width, c.height);
+  cx.drawImage(before, ox * k, oy * k, S.w * k, S.h * k);
+  const unpad = async src => {
+    const img = new Image();
+    await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = src; });
+    const m = document.createElement("canvas"); m.width = S.w; m.height = S.h;
+    const mx = m.getContext("2d", { willReadFrequently: true });
+    const sx = img.naturalWidth / pw, sy = img.naturalHeight / ph;
+    mx.drawImage(img, ox * sx, oy * sy, S.w * sx, S.h * sy, 0, 0, S.w, S.h);
+    return mx.getImageData(0, 0, S.w, S.h).data;
+  };
+  return { image: c.toDataURL("image/jpeg", 0.88), aspect: `${aw}:${ah}`, unpad };
+}
+
 async function autoDetect() {
   const id = S.photoId;
   S.detecting = true; $("busy").hidden = false; updateHint();
   try {
-    const ratio = S.w / S.h, off = a => Math.abs(Math.log(a[0] / a[1] / ratio));
-    const [aw, ah] = ASPECTS.reduce((best, a) => off(a) < off(best) ? a : best);
-    let pw = S.w, ph = S.h;
-    if (aw / ah > ratio) pw = Math.round(S.h * aw / ah); else ph = Math.round(S.w * ah / aw);
-    const ox = (pw - S.w) / 2, oy = (ph - S.h) / 2, k = Math.min(1, 1280 / Math.max(pw, ph));
-    const c = document.createElement("canvas");
-    c.width = Math.round(pw * k); c.height = Math.round(ph * k);
-    const cx = c.getContext("2d");
-    cx.fillStyle = "#808080"; cx.fillRect(0, 0, c.width, c.height);
-    cx.drawImage(before, ox * k, oy * k, S.w * k, S.h * k);
+    S.pad = padPhoto();
     const res = await fetch(CONFIG.detectUrl, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: c.toDataURL("image/jpeg", 0.88), aspect: `${aw}:${ah}` })
+      body: JSON.stringify({ image: S.pad.image, aspect: S.pad.aspect })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
     if (id !== S.photoId) return; // a new photo was loaded meanwhile
-    // Back to the photo's own frame: scale each answer to the padded size and cut the padding off
-    const unpad = async src => {
-      const img = new Image();
-      await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = src; });
-      const m = document.createElement("canvas"); m.width = S.w; m.height = S.h;
-      const mx = m.getContext("2d", { willReadFrequently: true });
-      const sx = img.naturalWidth / pw, sy = img.naturalHeight / ph;
-      mx.drawImage(img, ox * sx, oy * sy, S.w * sx, S.h * sy, 0, 0, S.w, S.h);
-      return mx.getImageData(0, 0, S.w, S.h).data;
-    };
-    const [found, coat] = await Promise.all([unpad(data.image), data.grey ? unpad(data.grey).catch(() => null) : null]);
+    const [found, coat] = await Promise.all([S.pad.unpad(data.image), data.grey ? S.pad.unpad(data.grey).catch(() => null) : null]);
     if (id !== S.photoId) return;
     applyMagenta(found, coat);
+    if (S.autoFound) requestPaint(S.color);
   } catch (e) {
     console.warn("Cabinet detection failed:", e);
     if (id === S.photoId) S.detectFailed = true;
@@ -554,6 +562,102 @@ function snapEdges(core) {
   return soft;
 }
 
+/* ---------- photo-real colour renders ---------- */
+// For each colour the customer picks, the AI paints the cabinets in that real Sherwin-Williams colour.
+// We keep only the cabinets from its picture and correct them to the exact chip; the instant preview
+// shows until it arrives. Renders are cached per colour and capped per photo to keep costs known.
+const MAX_RENDERS = 8;
+
+async function requestPaint(c) {
+  if (!CONFIG.detectUrl || !S.autoFound || !S.pad || S.renders[c.num] || S.pending.has(c.num)) return;
+  if (S.paintCount >= MAX_RENDERS) { updateHint(); return; }
+  const id = S.photoId;
+  S.pending.add(c.num); S.paintCount++; updateBadge();
+  try {
+    const res = await fetch(CONFIG.detectUrl, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: S.pad.image, aspect: S.pad.aspect, mode: "paint", color: { num: c.num, name: c.name, hex: c.hex.slice(1) } })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+    if (id !== S.photoId) return;
+    const px = await S.pad.unpad(data.image);
+    if (id !== S.photoId) return;
+    trackHardware(px);
+    S.renders[c.num] = correctRender(px, c);
+    if (S.color.num === c.num) render();
+  } catch (e) {
+    console.warn("Photo-real render failed:", e); // the instant preview stays
+  } finally {
+    if (id === S.photoId) { S.pending.delete(c.num); updateBadge(); }
+  }
+}
+
+function updateBadge() { $("hd").hidden = !(S.color && S.pending && S.pending.has(S.color.num)); }
+
+// Keep the AI's light and detail; shift its colour so the cabinets average to the exact chip hue, and
+// anchor brightness so the best-lit cabinet faces sit near the chip's lightness
+function correctRender(px, c) {
+  const { w, h, aiOK, aiBase } = S, n = w * h;
+  const L = new Float32Array(n), A = new Float32Array(n), B = new Float32Array(n);
+  const hA = new Uint32Array(512), hB = new Uint32Array(512), hL = new Uint32Array(1001);
+  let cnt = 0;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    if (!aiOK[i]) continue;
+    const lab = rgbToLab(px[p], px[p + 1], px[p + 2]);
+    L[i] = lab[0]; A[i] = lab[1]; B[i] = lab[2];
+    if (aiBase[i]) {
+      hA[Math.max(0, Math.min(511, Math.round(lab[1] * 2) + 256))]++;
+      hB[Math.max(0, Math.min(511, Math.round(lab[2] * 2) + 256))]++;
+      hL[Math.max(0, Math.min(1000, Math.round(lab[0] * 10)))]++; cnt++;
+    }
+  }
+  const pct = (hist, q) => { let acc = 0; for (let i = 0; i < hist.length; i++) { acc += hist[i]; if (acc >= cnt * q) return i; } return hist.length - 1; };
+  const mA = (pct(hA, 0.5) - 256) / 2, mB = (pct(hB, 0.5) - 256) / 2, lit = pct(hL, 0.85) / 10;
+  const t = rgbToLab(...hexRgb(c.hex)), k = 0.6 + 0.4 * t[0] / Math.max(lit, 1);
+  const out = new Uint8ClampedArray(n * 3);
+  for (let i = 0; i < n; i++) {
+    if (!aiOK[i]) continue;
+    const rgb = labToRgb(Math.min(100, Math.max(0, L[i] * k)), A[i] + t[1] - mA, B[i] + t[2] - mB);
+    out[i * 3] = rgb[0]; out[i * 3 + 1] = rgb[1]; out[i * 3 + 2] = rgb[2];
+  }
+  return out;
+}
+
+// Hardware = small compact spots inside the cabinets that the AI left unchanged in every colour render
+// so far (wood always changes in at least one; knobs and pulls don't). Those keep the photo's own pixels.
+function trackHardware(px) {
+  const { w, h, orig, aiBase } = S, n = w * h;
+  if (!S.same) { S.same = new Uint8Array(n); S.same.fill(1); }
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    if (S.same[i] && (Math.abs(px[p] - orig[p]) + Math.abs(px[p + 1] - orig[p + 1]) + Math.abs(px[p + 2] - orig[p + 2])) / 3 >= 28) S.same[i] = 0;
+  }
+  const inCab = boxBlur(Float32Array.from(aiBase), w, h, 2), cand = new Uint8Array(n);
+  for (let i = 0; i < n; i++) cand[i] = S.same[i] && inCab[i] > 0.001 ? 1 : 0;
+  const hw = new Uint8Array(n), seen = new Uint8Array(n), stack = new Int32Array(n), region = [];
+  for (let s = 0; s < n; s++) {
+    if (!cand[s] || seen[s]) continue;
+    let sp = 0, x0 = w, x1 = 0, y0 = h, y1 = 0, edge = 0, edgeIn = 0;
+    stack[sp++] = s; seen[s] = 1; region.length = 0;
+    while (sp) {
+      const i = stack[--sp], x = i % w, y = (i / w) | 0; region.push(i);
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) {
+        if (j < 0 || j >= n) continue;
+        if (cand[j]) { if (!seen[j]) { seen[j] = 1; stack[sp++] = j; } }
+        else { edge++; if (aiBase[j]) edgeIn++; }
+      }
+    }
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+    if (region.length < n * 0.000008 || region.length > n * 0.004) continue;
+    if (Math.max(bw, bh) / Math.min(bw, bh) > 6) continue;   // long seams aren't hardware
+    if (!edge || edgeIn / edge < 0.85) continue;              // must sit inside a door or drawer
+    for (const i of region) hw[i] = 1;
+  }
+  const grown = boxBlur(Float32Array.from(hw), w, h, 1);
+  S.hw = new Uint8Array(n); for (let i = 0; i < n; i++) S.hw[i] = grown[i] > 0.001 ? 1 : 0;
+}
+
 // Flip connected areas of `value` smaller than minSize pixels to the other value
 function keepRegions(mask, value, minSize) {
   const { w } = S, n = mask.length, seen = new Uint8Array(n), stack = new Int32Array(n), region = [];
@@ -655,9 +759,18 @@ function draw() {
   if (!outImg || !S.color) return;
   const { orig, alpha, Yd, Ylight, yMean, tY, w, h } = S, out = outImg.data, n = w * h;
   out.set(orig);
+  const real = S.renders && S.renders[S.color.num];
   for (let i = 0; i < n; i++) {
     const al = alpha[i];
     if (al <= 0) continue;
+    if (real && S.aiOK[i]) {
+      if (S.hw && S.hw[i]) continue; // keep the original handles and knobs
+      const p = i * 4, q = i * 3;
+      let r = real[q], g = real[q + 1], b = real[q + 2];
+      if (S.showSel) { r = r * 0.55 + 255 * 0.45; g = g * 0.55 + 60 * 0.45; b = b * 0.55 + 140 * 0.45; }
+      out[p] = orig[p] + (r - orig[p]) * al; out[p + 1] = orig[p + 1] + (g - orig[p + 1]) * al; out[p + 2] = orig[p + 2] + (b - orig[p + 2]) * al;
+      continue;
+    }
     // Final-coat look: an even, solid colour. Only the room's broad lighting and a softened hint of the
     // door profiles carry over; the old finish's grain and blotches don't.
     const light = Math.pow(Math.min(2.5, Math.max(0.15, Ylight[i] / yMean)), 0.75);
@@ -765,6 +878,8 @@ function updateHint() {
   if (S.tool === "erase") return hint("Paint over countertops, handles or walls that shouldn't change.");
   if (S.detecting) return hint("🔍 Finding your cabinets. This takes about 30 seconds, so hang tight…");
   if (AUTO && S.adjusting) return hint("Tap a spot the AI missed to add it, use <b>Brush</b> and <b>Erase</b> for fine fixes, then tap <b>Done</b>.");
+  if (AUTO && S.autoFound && S.paintCount >= MAX_RENDERS && !S.renders[S.color.num])
+    return hint(`Showing a quick preview of <b>${S.color.name}</b>. You've seen ${MAX_RENDERS} photo-real colours for this photo; ask us for a free quote to see more.`);
   if (AUTO && S.autoFound) return hint(`Your cabinets are shown in <b>${S.color.name}</b>. Pick any colour to try it.`);
   if (AUTO && S.detectFailed) return hint("We couldn't find the cabinets in this photo. Try one taken straight on with the lights on, or tap <b>Adjust</b> to paint them yourself.", true);
   if (S.detectFailed && !S.selected) return hint("We couldn't spot the cabinets automatically. <b>Tap each cabinet door</b> to paint it.", true);
@@ -799,7 +914,7 @@ function pickColor(c) {
   S.color = c;
   document.querySelectorAll(".sw").forEach(b => b.setAttribute("aria-pressed", b.dataset.num === c.num));
   $("curChip").style.background = c.hex; $("curName").textContent = c.name; $("curNum").textContent = "SW " + c.num;
-  buildLut(); render(); if (outImg) updateHint();
+  buildLut(); render(); if (outImg) { updateHint(); updateBadge(); requestPaint(c); }
 }
 $("search").addEventListener("input", () => {
   const q = $("search").value.trim().toLowerCase().replace(/^sw\s*/, ""), box = $("results");
