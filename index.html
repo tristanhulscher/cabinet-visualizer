@@ -736,6 +736,43 @@ async function paintFor(st, c) {
   }
 }
 
+function renderHardware(L, A, B, cab, w, h) {
+  const n = w * h, big = Math.max(w, h), r = Math.max(8, Math.round(big / 60)), cf = Float32Array.from(cab);
+  const mul = a => { const o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = a[i] * cf[i]; return o; };
+  const den = boxBlur(cf, w, h, r), mL = boxBlur(mul(L), w, h, r), mA = boxBlur(mul(A), w, h, r), mB = boxBlur(mul(B), w, h, r);
+  const inner = boxBlur(cf, w, h, 3), cand = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (inner[i] < 0.999 || den[i] < 0.05) continue;
+    const dL = L[i] - mL[i] / den[i], da = A[i] - mA[i] / den[i], db = B[i] - mB[i] / den[i];
+    if (Math.hypot(dL, da * 1.4, db * 1.4) > 18) cand[i] = 1;
+  }
+  const hw = new Uint8Array(n), seen = new Uint8Array(n), stack = new Int32Array(n), region = [];
+  const amin = Math.pow(big * 0.005, 2) * 0.5, amax = Math.pow(big * 0.035, 2);
+  for (let s = 0; s < n; s++) {
+    if (!cand[s] || seen[s]) continue;
+    let sp = 0, x0 = w, x1 = 0, y0 = h, y1 = 0, edge = 0, edgeIn = 0;
+    stack[sp++] = s; seen[s] = 1; region.length = 0;
+    while (sp) {
+      const i = stack[--sp], x = i % w, y = (i / w) | 0; region.push(i);
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) {
+        if (j < 0 || j >= n) continue;
+        if (cand[j]) { if (!seen[j]) { seen[j] = 1; stack[sp++] = j; } }
+        else { edge++; if (cab[j]) edgeIn++; }
+      }
+    }
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1, area = region.length;
+    if (area < amin || area > amax) continue;                 // knob- or pull-sized
+    if (Math.max(bw, bh) / Math.min(bw, bh) > 7) continue;     // bar pulls are long; panel grooves longer
+    if (area / (bw * bh) < 0.25) continue;                     // solid, not a shadow streak
+    if (!edge || edgeIn / edge < 0.9) continue;                // sits on a door or drawer
+    for (const i of region) hw[i] = 1;
+  }
+  const grown = boxBlur(Float32Array.from(hw), w, h, 1);
+  for (let i = 0; i < n; i++) hw[i] = grown[i] > 0.001 ? 1 : 0;
+  return hw;
+}
+
 // How well a render's edges line up with the photo's, outside the cabinets (1 = perfectly, 0 = not
 // at all). Edges ignore the overall re-lighting the AI does, so this only drops when it moved things.
 function renderAlign(st, px, cab) {
@@ -839,6 +876,10 @@ function correctRender(px, c) {
     if (Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) > 12) changed[i] = 1;
     else if (aiBase[i] && Math.hypot(Ab[i] - finA, Bb[i] - finB) < 10) { changed[i] = 1; own[i] = 1; }
   }
+  // Hardware the AI drew (knobs it recoloured, pulls it restyled): small compact spots inside the
+  // cabinets that stand out from the paint around them in this render. They show the original photo.
+  const rhw = renderHardware(L, A, B, aiBase, w, h);
+  for (let i = 0; i < n; i++) if (rhw[i]) changed[i] = 0;
   const keep = boxBlur(changed, w, h, 1);
   const ownL = rgbToLab(...hexRgb(c.hex))[0];
   for (let i = 0; i < n; i++) {
