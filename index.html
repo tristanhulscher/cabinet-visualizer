@@ -757,11 +757,14 @@ function snapEdges(core) {
   }
   const qR = bl(aR), qG = bl(aG), qB = bl(aB), qb = bl(b0);
   // Only within r pixels of the AI's edge; elsewhere keep its answer
-  const near = bl(P), soft = new Float32Array(n);
+  const near = bl(P), soft = new Float32Array(n), Q = new Float32Array(n);
+  for (let i = 0; i < n; i++) Q[i] = near[i] < 0.001 || near[i] > 0.999 ? core[i] : qR[i] * R[i] + qG[i] * G[i] + qB[i] * B[i] + qb[i];
+  // A touch of smoothing along the edge first: along a narrow shadow gap (a door beside a fridge) the
+  // raw answer flickers pixel to pixel, which shows as a dotted line instead of a clean one
+  const Qs = boxBlur(Q, w, h, 1);
   for (let i = 0; i < n; i++) {
     if (near[i] < 0.001 || near[i] > 0.999) { soft[i] = core[i]; continue; }
-    const q = qR[i] * R[i] + qG[i] * G[i] + qB[i] * B[i] + qb[i];
-    soft[i] = Math.min(1, Math.max(0, (q - 0.35) / 0.3)); // sharpen back into a crisp edge, no glow where the photo's edge is faint
+    soft[i] = Math.min(1, Math.max(0, (Qs[i] - 0.35) / 0.3)); // sharpen back into a crisp edge, no glow where the photo's edge is faint
   }
   return soft;
 }
@@ -879,8 +882,9 @@ function renderHardware(L, A, B, cab, w, h, fin) {
     if (woody > area / 2 && hi - lo < 40) continue;
     for (const i of region) hw[i] = 1;
   }
+  // One pixel wider to catch the knob's soft edge, but not onto wood (a brown ring shows on a light colour)
   const grown = boxBlur(Float32Array.from(hw), w, h, 1);
-  for (let i = 0; i < n; i++) hw[i] = grown[i] > 0.001 ? 1 : 0;
+  for (let i = 0; i < n; i++) hw[i] = hw[i] || (grown[i] > 0.001 && !finishInside(i, fin)) ? 1 : 0;
   return hw;
 }
 
@@ -1088,10 +1092,11 @@ function findHardware(coat) {
     }
     for (const i of region) hw[i] = woody > area / 2 && hi - lo < 40 ? 2 : 1;
   }
+  // One pixel wider to catch the knob's soft edge, but not onto wood (a brown ring shows on a light colour)
   S.hw = new Uint8Array(n);
   for (const level of [2, 1]) {
     const grown = boxBlur(Float32Array.from(hw, v => v === level ? 1 : 0), w, h, 1);
-    for (let i = 0; i < n; i++) if (grown[i] > 0.001) S.hw[i] = level;
+    for (let i = 0; i < n; i++) if (hw[i] === level || (grown[i] > 0.001 && !finishInside(i, fin))) S.hw[i] = level;
   }
 }
 
