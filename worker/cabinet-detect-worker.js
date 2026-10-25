@@ -54,6 +54,8 @@ kick, crown moulding on cabinets, and island or peninsula cabinetry. Fully hide 
 grain. Keep crisp, realistic detail on door profiles and edges, with the room's natural light and
 shadows so it looks like a real photograph. Use a smooth low-sheen finish: no mirror-like
 reflections, no window reflections, no light streaks or glare on the doors.
+Keep every door's design exactly: glass-front doors stay glass, showing the same items inside;
+open shelves stay open with the same items; never turn glass or open cabinets into solid doors.
 
 Do NOT change anything else: keep walls, ceiling, countertops, backsplash, appliances, range hood, sink,
 faucet, windows, floor, lights, handles and knobs, and every object exactly as they are. Keep the same
