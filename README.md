@@ -60,11 +60,14 @@ quoteUrl: "",                   // OR your existing quote page
 
 ## AI cabinet detection
 
-- **Where it runs:** a Cloudflare Worker named `cabinet-detect` on Tristan's Cloudflare account (tristanhulscher@gmail.com), at `https://cabinet-detect.tristanhulscher.workers.dev/`. `detectUrl` in `index.html` points at it; set `detectUrl: ""` to switch back to tap-to-select.
+- **How it works:** customers upload up to 3 photos (angles). For each photo the Worker asks Google's image model (`gemini-3.1-flash-image`) for two pictures: one with the cabinets in magenta (where they are) and one in an even grey coat (their light and shadow). For each colour the customer settles on, it also asks for the kitchen painted in that real Sherwin-Williams colour at 2K; the page keeps only the cabinets from it, corrects them to the exact chip, and keeps the original knobs and pulls. The first colour is requested at the same time as the cabinet search, so the first photo-real result shows in about 20 seconds.
+- **Where it runs:** a Cloudflare Worker named `cabinet-detect` on Tristan's Cloudflare account (tristanhulscher@gmail.com, not the Paint Bid Ninja account), at `https://cabinet-detect.tristanhulscher.workers.dev/`. `detectUrl` in `index.html` points at it.
 - **The key:** the Gemini API key is stored only as a Cloudflare secret named `GEMINI_API_KEY` (Worker → Settings → Variables and Secrets). It is never in this repo or the page.
-- **Billing:** the key belongs to the "My First Project" project in Google AI Studio, on prepaid credit. When the credit runs out, detection stops and customers see "tap Adjust to paint them yourself". Top up at aistudio.google.com/projects.
-- **Abuse limits:** the Worker only answers this site (plus localhost for testing), only accepts JPEG photos, and allows 15 photos per visitor per hour.
-- **Changing it:** edit `worker/cabinet-detect-worker.js`, then paste it into the Worker's **Edit code** screen on Cloudflare and click **Deploy**. The model is `gemini-4-argon`; `gemini-3.8-flash` was tried and only returns boxes, not outlines.
+- **Billing:** the key belongs to the "My First Project" project in Google AI Studio, on prepaid credit with a monthly spend cap (ai.studio/spend). About 5¢ per photo to find the cabinets and 7¢ per colour per photo. When the credit or cap runs out, customers see "Our visualizer is busy right now".
+- **Cost limits:** 5 photo-real colours per customer per day (each shown on all their angles; colours past that show an instant preview). The Worker also allows 10 photos per hour and 18 colour renders per day per visitor, and only answers this site (plus localhost for testing).
+- **Bot check:** Cloudflare Turnstile widget "Cabinet visualizer" (Turnstile in the Cloudflare dashboard; hostnames tristanhulscher.github.io and localhost). Its public site key is `turnstileSiteKey` in `index.html`. It only blocks bots once its **secret key** is added to the Worker as a secret named `TURNSTILE_SECRET` (Worker → Settings → Variables and Secrets → Add → type Secret). Without it the Worker lets every request through. Almost all visitors never see it; a suspicious one is asked to tick "Verify you are human" at the bottom of the page.
+- **Changing it:** edit `worker/cabinet-detect-worker.js`, then paste it into the Worker's **Edit code** screen on Cloudflare and click **Deploy**.
+- **Testing changes:** `cabinet-ai-test/regress.html` (open `http://localhost:8767/regress` with the test server running) runs the page on 12 saved kitchens without any AI cost and flags anything that changed from the saved baseline. Run it before every change goes live; `?save=baseline` records a new baseline once the results look right.
 
 ## Changing the popular colours
 
