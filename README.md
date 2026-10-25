@@ -1,20 +1,21 @@
 # Cabinet Colour Visualizer
 
-Customers upload a photo of their kitchen, tap their cabinets, and see them in any Sherwin-Williams colour. Then they can ask for a quote in that colour with one tap.
+Customers upload a photo of their kitchen and AI finds and paints their cabinets automatically, in any Sherwin-Williams colour. Then they can ask for a quote in that colour with one tap.
 
 - **20 popular cabinet colours** are shown first. On phones they sit right under the photo, so customers can try a colour with one tap.
 - **All 1,526 Sherwin-Williams colours** can be found by name or number (for example "Naval" or "6244").
-- **Tap to select.** Tapping a cabinet door selects the whole door. The **Brush** and **Erase** tools fix anything the tap missed or caught by mistake. **Undo** is available.
-- **Realistic result.** The room's light and shadows stay, handles and countertops don't change, and most of the wood grain is hidden like real paint would.
+- **No tapping.** Google's Gemini AI finds the cabinets (10–55 seconds per photo) and only those get painted: countertops, backsplash, walls, floors and appliances stay as they are, glass panes are cut out and handles keep their metal look. An **Adjust** button opens tap, brush and erase tools for the rare photo the AI gets wrong.
+- **Final-coat look.** A solid, even colour that matches the chip. The room's lighting and the door profiles show through; the old wood grain doesn't.
 - **Before / After** slider, **Download my photo** (labelled with the colour name and your brand), and **Get a free quote in this colour**.
-- **Private and free to run.** Everything happens in the customer's browser. Photos are never uploaded unless the customer sends a quote request. There are no AI fees or API keys.
+- **Photos and cost.** A downscaled copy of each photo goes to Google's Gemini AI to find the cabinets; nothing is stored by us unless the customer sends a quote. The footer says this. Each photo costs a few cents or less in prepaid Gemini credit.
 
 ## Files
 
 | File | What it is |
 |---|---|
 | `index.html` | The tool. Settings are at the top of the script, under "Settings: edit these" |
-| `colors.js` | The Sherwin-Williams colour list and the top 10 |
+| `colors.js` | The Sherwin-Williams colour list and the 20 popular colours |
+| `worker/cabinet-detect-worker.js` | The AI service. A copy runs on Cloudflare (see below); this file is the source |
 
 Both files must be hosted together, in the same folder.
 
@@ -57,6 +58,14 @@ quoteUrl: "",                   // OR your existing quote page
 
 **Shortcut:** `brand`, `accent`, `defaultColor` and `quoteUrl` can also be set in the embed link instead of the file, for example `index.html?brand=Acme%20Painting&accent=%23224466`.
 
+## AI cabinet detection
+
+- **Where it runs:** a Cloudflare Worker named `cabinet-detect` on Tristan's Cloudflare account (tristanhulscher@gmail.com), at `https://cabinet-detect.tristanhulscher.workers.dev/`. `detectUrl` in `index.html` points at it; set `detectUrl: ""` to switch back to tap-to-select.
+- **The key:** the Gemini API key is stored only as a Cloudflare secret named `GEMINI_API_KEY` (Worker → Settings → Variables and Secrets). It is never in this repo or the page.
+- **Billing:** the key belongs to the "My First Project" project in Google AI Studio, on prepaid credit. When the credit runs out, detection stops and customers see "tap Adjust to paint them yourself". Top up at aistudio.google.com/projects.
+- **Abuse limits:** the Worker only answers this site (plus localhost for testing), only accepts JPEG photos, and allows 15 photos per visitor per hour.
+- **Changing it:** edit `worker/cabinet-detect-worker.js`, then paste it into the Worker's **Edit code** screen on Cloudflare and click **Deploy**. The model is `gemini-4-argon`; `gemini-3.8-flash` was tried and only returns boxes, not outlines.
+
 ## Changing the popular colours
 
 In `colors.js`, the first line after the comment lists the 20 popular colours by Sherwin-Williams number:
@@ -75,7 +84,7 @@ That list is a general starting point, not based on sales data. Swap in your bes
 
 ## Good to know
 
-- **Best photos:** taken straight on, in good light. Cabinets that are a different colour from the walls select in one tap. If a tap spills onto the wall, press **Undo**, lower **Spread**, and tap again.
+- **Best photos:** taken straight on, in good light, with the cabinets filling most of the photo.
 - **Colours are approximate.** Screens vary, and the footer tells customers to check a real paint chip.
 - **Trademark wording.** The footer notes that Sherwin-Williams names and numbers are their trademarks. Keep that line.
 - **Lead tracking.** If the page has Google Analytics, a `generate_lead` event fires when a quote is sent. The host page also receives a `cabinet-visualizer:lead` message, if you want to hook up other tracking.
