@@ -23,6 +23,7 @@
 
 const MODEL = "gemini-3.1-flash-image"; // "Nano Banana 2": matched or beat Pro on test kitchens at a fraction of the cost
 const ALLOWED_ORIGINS = [
+  "https://colours.envisionpainting.ca",
   "https://tristanhulscher.github.io",
   "http://localhost:8766",
   "http://localhost:8767",
