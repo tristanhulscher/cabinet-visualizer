@@ -768,7 +768,7 @@ function enclosed(base) {
       for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w])
         if (j >= 0 && j < n && out[j] && !lab[j]) { lab[j] = 1; stack[sp++] = j; }
     }
-    if (region.length > n * 0.03) for (const i of region) out[i] = 0;
+    if (region.length > n * 0.07) for (const i of region) out[i] = 0; // (a tall glass door, photographed close, is ~5%)
   }
   return out;
 }
@@ -1292,7 +1292,10 @@ function correctRender(px, c) {
   const photo = boxBlur(restore, w, h, 1);
   // How much of the render shows: paint, plus anything in and around glass panes and cubbies
   const shown = new Float32Array(n);
-  for (let i = 0; i < n; i++) shown[i] = changed[i] || own[i] || (S.innerNear && S.innerNear[i]) ? 1 : 0;
+  // (and everywhere inside the outline: what the render left alone there, like the dishes behind a glass pane the
+  // find pass painted over, is still the render's own coherent picture, with the shelves painted; the photo there
+  // brought back old wood shelves next to painted ones)
+  for (let i = 0; i < n; i++) shown[i] = changed[i] || own[i] || aiBase[i] || (S.innerNear && S.innerNear[i]) ? 1 : 0;
   const show = boxBlur(shown, w, h, 1);
   // Lightness two ways: the render's (corrected), and our own from the grey coat's shading
   const ownL = t[0], Lr = new Float32Array(n), Lo = new Float32Array(n), Ld = new Float32Array(n);
