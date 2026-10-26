@@ -652,7 +652,11 @@ function applyMagenta(ed, coat) {
     // paint pushes blue far above green; red can't be the test because cherry and oak start out red.
     // Bright pixels must also be strongly coloured, unless the blue jump is huge
     const towardB = (b - g) - (orig[p + 2] - orig[p + 1]), sat = (hi - g) / Math.max(hi, 1);
-    if (magenta && towardB > Math.max(14, 0.3 * hi) && (hi < 120 || sat > 0.33 || towardB > 90)) { mask[i] = 1; found++; }
+    // Dark magenta can also be a reflection in dark glass (a microwave door picks up the magenta cabinets
+    // around it); if the grey coat left that neutral dark spot as it was, it isn't cabinet (dark wood is tinted,
+    // and the coat sometimes leaves a shadowed wooden side alone)
+    const kept = coat && hi < 90 && S.Lb[i] < 30 && Math.hypot(S.Ab[i], S.Bb[i]) < 6 && (Math.abs(coat[p] - orig[p]) + Math.abs(coat[p + 1] - orig[p + 1]) + Math.abs(coat[p + 2] - orig[p + 2])) / 3 < 16;
+    if (magenta && !kept && towardB > Math.max(14, 0.3 * hi) && (hi < 120 || sat > 0.33 || towardB > 90)) { mask[i] = 1; found++; }
     else if (i % 7 === 0) { drift += Math.abs(r + g + b - orig[p] - orig[p + 1] - orig[p + 2]) / 3; samples++; }
   }
   drift = samples ? drift / samples : 0;
@@ -676,14 +680,17 @@ function applyMagenta(ed, coat) {
   let coatCh = null;
   if (coat) {
     coatCh = new Uint8Array(n);
+    const minChange = coatChange(finish(core));
     for (let i = 0, p = 0; i < n; i++, p += 4) {
       const R = coat[p], G = coat[p + 1], B = coat[p + 2];
       const diff = (Math.abs(R - orig[p]) + Math.abs(G - orig[p + 1]) + Math.abs(B - orig[p + 2])) / 3;
       const pc = Math.hypot(S.Ab[i], S.Bb[i]), cl = rgbToLab(R, G, B), cc = Math.hypot(cl[1], cl[2]);
-      if ((Math.max(R, G, B) - Math.min(R, G, B) < 22 && diff > 18) || (pc >= 6 && cc < pc * 0.5 && diff < 30)) coatCh[i] = 1;
+      if ((Math.max(R, G, B) - Math.min(R, G, B) < 22 && diff > minChange) || (pc >= 6 && cc < pc * 0.5 && diff < 30)) coatCh[i] = 1;
     }
   }
-  const soft = snapEdges(core, undefined, coatCh);
+  // White or light grey cabinets against a white ceiling or wall: there's almost no edge in the photo to snap
+  // to, and the snapping wandered into a wavy line. The AI's own outline is straighter there
+  const soft = coat && coatChange(finish(core)) > 18 ? Float32Array.from(core) : snapEdges(core, undefined, coatCh);
   // Light and shadow for the new paint come from the AI's grey final coat (or, without one, from its
   // magenta render): door shapes and room lighting, none of the old finish's grain or glare
   const s = new Float32Array(n), cf = Float32Array.from(core);
@@ -758,14 +765,14 @@ function growToCoat(core, coat) {
   const ring = boxBlur(Float32Array.from(core), w, h, r), cand = new Uint8Array(n);
   // ...and only where the photo still looks like the old finish: the AI also re-lights ceilings and
   // walls a little in its grey render, which would otherwise read as fresh grey paint
-  const fin = finish(core);
+  const fin = finish(core), minChange = coatChange(fin);
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     if (core[i]) { cand[i] = 1; continue; }
     if (!likeFinish(i, fin)) continue;
     const R = coat[p], G = coat[p + 1], B = coat[p + 2];
     const chroma = Math.max(R, G, B) - Math.min(R, G, B);
     const changed = (Math.abs(R - orig[p]) + Math.abs(G - orig[p + 1]) + Math.abs(B - orig[p + 2])) / 3;
-    if (ring[i] > 0.001 && chroma < 22 && changed > 18) cand[i] = 1;
+    if (ring[i] > 0.001 && chroma < 22 && changed > minChange) cand[i] = 1;
   }
   const out = core.slice(), stack = new Int32Array(n);
   let sp = 0;
@@ -780,6 +787,11 @@ function growToCoat(core, coat) {
   keepRegions(out, 0, n * 0.00004);
   return out;
 }
+
+// How far (0..255) the grey coat must have moved a pixel to count as fresh grey paint. Over light grey or
+// white cabinets that's a big step down, while the AI's re-lighting of the white walls and ceiling beside
+// them is a smaller one, which at the usual threshold spilled the outline onto the wall
+const coatChange = fin => fin.chroma < 8 && fin.L > 70 ? 45 : 18;
 
 // The old cabinet finish: median colour of the cabinet pixels in the photo
 function finish(cab) {
@@ -1127,7 +1139,7 @@ function correctRender(px, c) {
     }
   }
   const pct = (hist, q) => { let acc = 0; for (let i = 0; i < hist.length; i++) { acc += hist[i]; if (acc >= cnt * q) return i; } return hist.length - 1; };
-  const mA = (pct(hA, 0.5) - 256) / 2, mB = (pct(hB, 0.5) - 256) / 2, lit = pct(hL, 0.85) / 10;
+  const mA = (pct(hA, 0.5) - 256) / 2, mB = (pct(hB, 0.5) - 256) / 2, lit = pct(hL, 0.85) / 10, pL = pct(hL, 0.5) / 10;
   // Mostly the chip's lightness in this room's light: the AI paints dark colours (navy, black, greens) too light
   const t = roomChip(c), k = 0.25 + 0.75 * t[0] / Math.max(lit, 1), litK = lit * k;
   // The AI tends to over-darken whole panels that face away from the light (an island end turns flat
@@ -1150,21 +1162,76 @@ function correctRender(px, c) {
   // Colour difference, not just brightness: navy over dark wood is about as dark, but a different colour.
   const changed = new Float32Array(n), own = new Uint8Array(n), restore = new Float32Array(n), { Lb, Ab, Bb } = S, fin = finish(aiBase);
   const rim = boxBlur(cf, w, h, 2); // 1 = at least 2 pixels inside the outline
+  // A colour close to the old finish (white over white): the render's paint looks just like the photo, so
+  // "unchanged" doesn't mean skipped. Its own pixel is the paint there; painting it ourselves from the
+  // grey coat flattened the door profiles
+  const sameFin = Math.hypot((t[0] - fin.L) * 0.5, t[1] - fin.a, t[2] - fin.b) < 12, whiteFin = coatChange(fin) > 18;
   let coat = null;
   if (S.coatPainted) { // only solid patches count, single pixels would speckle
     coat = new Float32Array(n);
     for (let i = 0; i < n; i++) coat[i] = S.coatPainted[i] && Lb[i] < 25 ? 1 : 0;
     coat = boxBlur(coat, w, h, 3);
   }
+  // The AI sometimes invents a door: glass panes with dishes, or open shelves, on what is a solid door. The grey
+  // coat (asked for separately) keeps the real door, and a solid door is plain there. Where the render is
+  // far busier than the coat across about a door panel, we paint the spot ourselves from the coat's shading
+  const made = new Uint8Array(n);
+  {
+    const R = Math.max(6, Math.round(Math.max(w, h) / 50)), mk = new Float32Array(n), cL = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      mk[i] = aiBase[i] && !(S.inner && S.inner[i]) && !(S.hw && S.hw[i]) ? 1 : 0;
+      cL[i] = S.aiY[i] > 0.008856 ? 116 * Math.cbrt(S.aiY[i]) - 16 : 903.3 * S.aiY[i];
+    }
+    const sd = x => {
+      const a = new Float32Array(n), b = new Float32Array(n);
+      for (let i = 0; i < n; i++) { a[i] = x[i] * mk[i]; b[i] = x[i] * x[i] * mk[i]; }
+      const d = boxBlur(mk, w, h, R), s1 = boxBlur(a, w, h, R), s2 = boxBlur(b, w, h, R), o = new Float32Array(n);
+      for (let i = 0; i < n; i++) o[i] = d[i] > 0.3 ? Math.sqrt(Math.max(0, s2[i] / d[i] - (s1[i] / d[i]) ** 2)) : 0;
+      return o;
+    };
+    // (the coat's best-lit faces against the render's: a dark colour has less contrast than mid grey)
+    const hC = new Uint32Array(1001);
+    let cc = 0;
+    for (let i = 0; i < n; i++) if (mk[i]) { hC[Math.max(0, Math.min(1000, Math.round(cL[i] * 10)))]++; cc++; }
+    const lit85 = hist => { let acc = 0, q = 0; while (q < 1000 && (acc += hist[q]) < cc * 0.85) q++; return Math.max(q / 10, 1); };
+    // ...and the photo's: where the coat lost a door's detail, the photo still has it (wood grain makes it busy,
+    // so whichever is busier counts)
+    const hP = new Uint32Array(1001);
+    for (let i = 0; i < n; i++) if (mk[i]) hP[Math.max(0, Math.min(1000, Math.round(Lb[i] * 10)))]++;
+    const scale = lit / lit85(hC), pScale = lit / lit85(hP), sR = sd(L), sC = sd(cL), sP = sd(Lb), busy = new Float32Array(n);
+    // (well inside the cabinets only: along the outline the render and the coat differ by a pixel or two,
+    // which reads as busy too)
+    const deep = boxBlur(mk, w, h, Math.round(R / 2));
+    for (let i = 0; i < n; i++) busy[i] = deep[i] > 0.999 && sR[i] > 2 * Math.max(sC[i] * scale, sP[i] * pScale) + 3 ? 1 : 0;
+    const area = boxBlur(boxBlur(busy, w, h, Math.round(R / 2)).map(v => v > 0.15 ? 1 : 0), w, h, Math.round(R / 3));
+    // There the coat stands in for the render: its door, at the render's brightness and average tint, then
+    // corrected like the rest of the paint
+    // (brightness: the render's own paint nearby, outside the busy spot, so the patch doesn't show as a band)
+    for (let i = 0; i < n; i++) if (mk[i] && area[i] > 0.001) made[i] = 1;
+    const ok = new Float32Array(n), okL = new Float32Array(n), okC = new Float32Array(n);
+    for (let i = 0; i < n; i++) if (mk[i] && !made[i]) { ok[i] = 1; okL[i] = L[i]; okC[i] = cL[i]; }
+    const nb = boxBlur(ok, w, h, 3 * R), nL = boxBlur(okL, w, h, 3 * R), nC = boxBlur(okC, w, h, 3 * R);
+    for (let i = 0; i < n; i++) if (made[i]) {
+      L[i] = nb[i] > 0.05 ? nL[i] / nb[i] + (cL[i] - nC[i] / nb[i]) * scale : cL[i] * scale;
+      A[i] = mA; B[i] = mB;
+    }
+  }
   for (let i = 0; i < n; i++) {
     if (!aiOK[i]) continue;
+    if (made[i]) { changed[i] = 1; continue; }
     // Also painted: a spot whose colour moved clearly toward the chip, even if it's no lighter or darker
     const tA = t[1] - Ab[i], tB = t[2] - Bb[i], tl = Math.hypot(tA, tB);
     const toward = tl > 10 && ((A[i] - Ab[i]) * tA + (B[i] - Bb[i]) * tB) / tl > Math.max(5, 0.35 * tl);
-    if (Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) > 12 || toward) changed[i] = 1;
+    // ...and over white cabinets it must have moved toward the render's paint: a white bulkhead or wall the find
+    // pass took along, which the render only re-lit a little (white staying white beside navy cabinets), isn't paint
+    const near = Math.hypot((L[i] - pL) * 0.5, A[i] - mA, B[i] - mB) < Math.hypot((Lb[i] - pL) * 0.5, Ab[i] - mA, Bb[i] - mB) - 4;
+    if ((Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) > 12 || toward) && (near || sameFin || !whiteFin)) changed[i] = 1;
     // (not right at the outline: a dark line there is the shadow under a countertop or crown, which the render
     // keeps, and painting it ourselves dotted it with white)
-    else if (aiBase[i] && rim[i] > 0.999 && ((coat && coat[i] > 0.6) || finishInside(i, fin))) { changed[i] = 1; own[i] = 1; }
+    else if (aiBase[i] && rim[i] > 0.999 && sameFin) changed[i] = 1; // (a shadow on the old white is paint too)
+    // (a white finish looks just like the white drywall the find pass sometimes takes along, so there a spot the
+    // render left alone stays as it is: the render paints over white reliably)
+    else if (aiBase[i] && rim[i] > 0.999 && ((coat && coat[i] > 0.6) || (!whiteFin && finishInside(i, fin)))) { changed[i] = 1; own[i] = 1; }
   }
   // Close thin unpainted seams (a 1-3px line where a door meets the crown or a frame) so they don't show
   // as a dashed line of old finish; bigger unpainted areas (glass, open shelves) are untouched
@@ -1176,15 +1243,16 @@ function correctRender(px, c) {
   // cabinets that stand out from the paint around them in this render. They show the original photo.
   const rhw = renderHardware(L, A, B, aiBase, w, h, fin);
   for (let i = 0; i < n; i++) if (rhw[i]) restore[i] = 1;
-  // Wood-coloured hardware candidates: real knobs if this render kept them as they were
-  if (S.hw) for (let i = 0; i < n; i++) if (S.hw[i] === 2 && Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) < 20) restore[i] = 1;
+  // Wood-coloured hardware candidates: real knobs if this render kept them as they were (meaningless when the
+  // colour matches the old finish: the render keeps everything there, and a stool's shadow came back as photo)
+  if (S.hw && !sameFin) for (let i = 0; i < n; i++) if (S.hw[i] === 2 && Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) < 20) restore[i] = 1;
   const photo = boxBlur(restore, w, h, 1);
   // How much of the render shows: paint, plus anything in and around glass panes and cubbies
   const shown = new Float32Array(n);
   for (let i = 0; i < n; i++) shown[i] = changed[i] || own[i] || (S.innerNear && S.innerNear[i]) ? 1 : 0;
   const show = boxBlur(shown, w, h, 1);
   // Lightness two ways: the render's (corrected), and our own from the grey coat's shading
-  const ownL = t[0], Lr = new Float32Array(n), Lo = new Float32Array(n);
+  const ownL = t[0], Lr = new Float32Array(n), Lo = new Float32Array(n), Ld = new Float32Array(n);
   // The paint itself: an even final coat (see evenCoat), not on handles or what's behind glass. Its detail
   // (door profiles, lit edges) keeps full strength where the colour is darkened (scaling it with the colour
   // flattened navy and other dark colours), and those edges are sharpened a little and given more definition
@@ -1211,6 +1279,7 @@ function correctRender(px, c) {
     // (not right at the cabinet's outer edge: there it only turns the render's outline into a dashed line)
     const crisp = coatOK[i] && mD[i] > 0.999 ? edge[i] * (0.4 * (Ls[i] - sN[i] / sD[i]) + 0.4 * (Ls[i] - mN[i] / mD[i])) : 0;
     Lr[i] = (broad < litK ? litK - (litK - broad) * shade : broad) + fine + crisp;
+    Ld[i] = fine + crisp;
     Lo[i] = ownL * Math.pow(Math.min(2.5, Math.max(0.15, S.aiY[i] / S.aiMean)), 0.45);
   }
   // Spots we paint ourselves take on the brightness of the render's paint around them, so they blend in
@@ -1224,7 +1293,10 @@ function correctRender(px, c) {
   const offset = i => Math.max(-12, Math.min(12, offD[i] > 0.3 ? offN[i] / offD[i] : wideD[i] > 0.05 ? wideN[i] / wideD[i] : 0));
   // Paint's brightest faces roll off softly instead of clipping to flat white, so a white crown moulding or a
   // lit door edge keeps its shading (only very light colours get that bright)
+  // The roll-off applies to the broad light; door profiles and edges on top of it keep most of their strength
+  // (a white chip sits in the roll-off itself, which flattened its door lines to a third)
   const roll = v => Math.max(0, v <= 86 ? v : 86 + 10 * (1 - Math.exp(-(v - 86) / 10)));
+  const rollD = (v, d) => { const b = v - d; return Math.min(100, roll(b) + d * Math.max(0.8, b <= 86 ? 1 : Math.exp(-(b - 86) / 10))); };
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     if (!aiOK[i]) continue;
     // Inside glass panes and cubbies nothing counts as paint: correcting some pixels and not their
@@ -1233,14 +1305,13 @@ function correctRender(px, c) {
     if (S.inner && S.inner[i]) { own[i] = 0; changed[i] = 0; }
     const rgb = own[i] ? labToRgb(roll(Lo[i] + offset(i)), t[1], t[2])
       // (a white keeps only half the render's tint wobble: it should read as one clean chip colour)
-      : changed[i] ? labToRgb(roll(Lr[i]), t[1] + (As[i] - mA) * (1 - 0.5 * light), t[2] + (Bs[i] - mB) * (1 - 0.5 * light))
+      : changed[i] ? labToRgb(rollD(Lr[i], Ld[i]), t[1] + (As[i] - mA) * (1 - 0.5 * light), t[2] + (Bs[i] - mB) * (1 - 0.5 * light))
       : labToRgb(Math.min(100, Math.max(0, Lr[i])), A[i], B[i]);
     // Alpha: how much of this render shows (0 = the photo's hardware). Pixels that aren't paint are marked
     // 254 rather than 255, so the quick preview of other colours knows to leave them alone
     const a = Math.round(show[i] * (1 - photo[i]) * 255);
     out[p] = rgb[0]; out[p + 1] = rgb[1]; out[p + 2] = rgb[2]; out[p + 3] = own[i] || changed[i] ? a : Math.min(254, a);
-  }
-  return out;
+  }  return out;
 }
 
 // Hardware: knobs and pulls are small, compact spots inside a door or drawer whose colour clearly
