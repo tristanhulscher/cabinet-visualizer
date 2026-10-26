@@ -1061,15 +1061,17 @@ function measureRoom(coat) {
   const Y = r * 0.2126 + g * 0.7152 + b * 0.0722;
   S.room = { lit: q / 1000, cast: [r / Y, g / Y, b / Y] };
 }
-// The chip (Lab) as it shows on the best-lit cabinet faces in this photo: half way between the chip itself
-// and the chip fully in the room's light. Enough to sit in the room (no glowing whites), while whites stay
-// clean and strong colours like navy keep their fullness. A bright room doesn't make it lighter than the chip
+// The chip (Lab) as it shows on the best-lit cabinet faces in this photo. Darker colours go half way toward
+// the chip fully in the room's light, so they sit in the room while keeping their fullness; light colours
+// less and less, and whites not at all: a clean, bright white sells, a room-tinted one looks creamy and dull.
+// A bright room doesn't make a colour lighter than the chip
 function roomChip(c) {
   const t = rgbToLab(...hexRgb(c.hex));
   if (!S.room) return t;
   const k = Math.min(1, S.room.lit / LIN[128]);
   const lit = rgbToLab(...hexRgb(c.hex).map((v, j) => gamma(Math.min(1, LIN[v] * S.room.cast[j] * k))));
-  return t.map((v, j) => v + (lit[j] - v) * 0.5);
+  const share = 0.5 * Math.min(1, Math.max(0, (85 - t[0]) / 35));
+  return t.map((v, j) => v + (lit[j] - v) * share);
 }
 
 // A final coat is smooth and evenly coloured. The AI's render still carries faint grain and blotches (they
@@ -1120,7 +1122,9 @@ function correctRender(px, c) {
   // Mostly the chip's lightness in this room's light: the AI paints dark colours (navy, black, greens) too light
   const t = roomChip(c), k = 0.25 + 0.75 * t[0] / Math.max(lit, 1), litK = lit * k;
   // The AI tends to over-darken whole panels that face away from the light (an island end turns flat
-  // grey). Soften the broad shadow across a panel by a third; fine shading (door profiles) is untouched
+  // grey). Soften the broad shadow across a panel by a third, and on light colours by up to a half (a fresh
+  // white coat looks bright and even, not fading into grey); fine shading (door profiles) is untouched
+  const shade = 0.65 - 0.2 * Math.min(1, Math.max(0, (t[0] - 60) / 30));
   const r = Math.max(6, Math.round(Math.max(w, h) / 40)), cf = Float32Array.from(aiBase), Lm = new Float32Array(n);
   for (let i = 0; i < n; i++) Lm[i] = L[i] * cf[i];
   const num = boxBlur(Lm, w, h, r), den = boxBlur(cf, w, h, r);
@@ -1170,17 +1174,19 @@ function correctRender(px, c) {
   const ownL = t[0], Lr = new Float32Array(n), Lo = new Float32Array(n);
   // The paint itself: an even final coat (see evenCoat), not on handles or what's behind glass. Its detail
   // (door profiles, lit edges) keeps full strength where the colour is darkened (scaling it with the colour
-  // flattened navy and other dark colours), and those edges are sharpened a little: the AI's render is
-  // softer than a photo
+  // flattened navy and other dark colours), and those edges are sharpened a little and given more definition
+  // (the AI's render is softer than a photo). With the grain smoothed away first, only real edges (profiles,
+  // frames, shadow lines) are strengthened
   const coatOK = new Uint8Array(n);
   for (let i = 0; i < n; i++) coatOK[i] = aiOK[i] && !restore[i] && !(S.hw && S.hw[i]) && !(S.inner && S.inner[i]) ? 1 : 0;
   const [Ls, As, Bs] = evenCoat(L, A, B, coatOK, w, h);
-  const sN = boxBlur(Ls, w, h, 1), sD = boxBlur(Float32Array.from(aiOK), w, h, 1);
+  const okF = Float32Array.from(aiOK), sN = boxBlur(Ls, w, h, 1), sD = boxBlur(okF, w, h, 1);
+  const mN = boxBlur(Ls, w, h, 4), mD = boxBlur(okF, w, h, 4);
   for (let i = 0; i < n; i++) {
     if (!aiOK[i]) continue;
     const b0 = den[i] > 0.05 ? num[i] / den[i] : L[i], broad = b0 * k, fine = (Ls[i] - b0) * Math.max(1, k);
-    const crisp = 0.4 * (Ls[i] - sN[i] / Math.max(sD[i], 1e-3));
-    Lr[i] = (broad < litK ? litK - (litK - broad) * 0.65 : broad) + fine + crisp;
+    const crisp = 0.4 * (Ls[i] - sN[i] / Math.max(sD[i], 1e-3)) + 0.4 * (Ls[i] - mN[i] / Math.max(mD[i], 1e-3));
+    Lr[i] = (broad < litK ? litK - (litK - broad) * shade : broad) + fine + crisp;
     Lo[i] = ownL * Math.pow(Math.min(2.5, Math.max(0.15, S.aiY[i] / S.aiMean)), 0.45);
   }
   // Spots we paint ourselves take on the brightness of the render's paint around them, so they blend in
@@ -1192,14 +1198,17 @@ function correctRender(px, c) {
   const offN = boxBlur(dL, w, h, rr), offD = boxBlur(isR, w, h, rr);
   const wideN = boxBlur(dL, w, h, rr * 5), wideD = boxBlur(isR, w, h, rr * 5);
   const offset = i => Math.max(-12, Math.min(12, offD[i] > 0.3 ? offN[i] / offD[i] : wideD[i] > 0.05 ? wideN[i] / wideD[i] : 0));
+  // Paint's brightest faces roll off softly instead of clipping to flat white, so a white crown moulding or a
+  // lit door edge keeps its shading (only very light colours get that bright)
+  const roll = v => Math.max(0, v <= 86 ? v : 86 + 10 * (1 - Math.exp(-(v - 86) / 10)));
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     if (!aiOK[i]) continue;
     // Inside glass panes and cubbies nothing counts as paint: correcting some pixels and not their
     // neighbours chopped up the dishes behind the glass. Whatever isn't paint keeps the render's own colours
     // with the same brightness correction as the paint around it, so there's no seam where paint was lifted.
     if (S.inner && S.inner[i]) { own[i] = 0; changed[i] = 0; }
-    const rgb = own[i] ? labToRgb(Math.min(100, Math.max(0, Lo[i] + offset(i))), t[1], t[2])
-      : changed[i] ? labToRgb(Math.min(100, Math.max(0, Lr[i])), As[i] + t[1] - mA, Bs[i] + t[2] - mB)
+    const rgb = own[i] ? labToRgb(roll(Lo[i] + offset(i)), t[1], t[2])
+      : changed[i] ? labToRgb(roll(Lr[i]), As[i] + t[1] - mA, Bs[i] + t[2] - mB)
       : labToRgb(Math.min(100, Math.max(0, Lr[i])), A[i], B[i]);
     // Alpha: how much of this render shows (0 = the photo's hardware). Pixels that aren't paint are marked
     // 254 rather than 255, so the quick preview of other colours knows to leave them alone
