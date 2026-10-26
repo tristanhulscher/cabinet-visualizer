@@ -1277,7 +1277,8 @@ function correctRender(px, c) {
   // The paint itself: an even final coat (see evenCoat), not on handles or what's behind glass. Its detail
   // (door profiles, lit edges) keeps full strength where the colour is darkened (scaling it with the colour
   // flattened navy and other dark colours), and those edges are sharpened a little and given more definition
-  // (the AI's render is softer than a photo), only where there is a real edge: in flat paint that would only
+  // (the AI's render is softer than a photo; only gently, since harder edges read as harsh), only where there is
+  // a real edge: in flat paint that would only
   // strengthen blotches. All of it on the cabinet surface itself, so the ceiling or counter beside it can't
   // leave a halo or a dashed line along the cabinet's edge
   const coatOK = new Uint8Array(n);
@@ -1298,7 +1299,7 @@ function correctRender(px, c) {
     if (coatOK[i]) d *= d * d / (d * d + 4);
     const fine = d * Math.max(1, k);
     // (not right at the cabinet's outer edge: there it only turns the render's outline into a dashed line)
-    const crisp = coatOK[i] && mD[i] > 0.999 ? edge[i] * (0.4 * (Ls[i] - sN[i] / sD[i]) + 0.4 * (Ls[i] - mN[i] / mD[i])) : 0;
+    const crisp = coatOK[i] && mD[i] > 0.999 ? edge[i] * (0.15 * (Ls[i] - sN[i] / sD[i]) + 0.25 * (Ls[i] - mN[i] / mD[i])) : 0;
     Lr[i] = (broad < litK ? litK - (litK - broad) * shade : broad) + fine + crisp;
     Ld[i] = fine + crisp;
     Lo[i] = ownL * Math.pow(Math.min(2.5, Math.max(0.15, S.aiY[i] / S.aiMean)), 0.45);
