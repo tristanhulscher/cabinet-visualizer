@@ -985,7 +985,9 @@ function renderHardware(L, A, B, cab, w, h, fin) {
       const p = i * 4, l = rgbToLab(S.orig[p], S.orig[p + 1], S.orig[p + 2])[0];
       if (l < lo) lo = l; if (l > hi) hi = l;
     }
-    if (woody > area / 2 && hi - lo < 40) continue;
+    // (contrast doesn't make it hardware: a dark knot in light oak is contrasty, and a real knob in the wood's own
+    // colour is still kept through findHardware when the render keeps it)
+    if (woody > area / 2) continue;
     for (const i of region) hw[i] = 1;
   }
   // One pixel wider to catch the knob's soft edge, but not onto wood (a brown ring shows on a light colour)
@@ -1143,10 +1145,11 @@ function correctRender(px, c) {
   // Mostly the chip's lightness in this room's light: the AI paints dark colours (navy, black, greens) too light
   const t = roomChip(c), k = 0.25 + 0.75 * t[0] / Math.max(lit, 1), litK = lit * k;
   // The AI tends to over-darken whole panels that face away from the light (an island end turns flat
-  // grey). Soften the broad shadow across a panel by a third, and on light colours by up to a half (a fresh
-  // white coat looks bright and even, not fading into grey); fine shading (door profiles) is untouched
+  // grey). Soften the broad shadow across a panel by a fifth, and on light colours by up to nearly a half (a
+  // fresh white coat looks bright and even, not fading into grey, but lifting more read as washed out and thin);
+  // fine shading (door profiles) is untouched
   const light = Math.min(1, Math.max(0, (t[0] - 60) / 30)); // 0 mid tones and darker .. 1 whites
-  const shade = 0.65 - 0.28 * light;
+  const shade = 0.8 - 0.25 * light;
   const r = Math.max(6, Math.round(Math.max(w, h) / 40)), cf = Float32Array.from(aiBase), Lm = new Float32Array(n);
   for (let i = 0; i < n; i++) Lm[i] = L[i] * cf[i];
   const num = boxBlur(Lm, w, h, r), den = boxBlur(cf, w, h, r);
@@ -1246,6 +1249,24 @@ function correctRender(px, c) {
   // Wood-coloured hardware candidates: real knobs if this render kept them as they were (meaningless when the
   // colour matches the old finish: the render keeps everything there, and a stool's shadow came back as photo)
   if (S.hw && !sameFin) for (let i = 0; i < n; i++) if (S.hw[i] === 2 && Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) < 20) restore[i] = 1;
+  // Certain hardware (found in the photo) that this render shows as plain paint, with no knob there at all, was a
+  // spot on the old finish (glare, a knot): the render paints it. A real knob stays a knob in the render, even
+  // when the AI recolours it
+  const plain = new Uint8Array(n);
+  if (S.hw) {
+    const seen = new Uint8Array(n), stack = new Int32Array(n), region = [];
+    for (let s = 0; s < n; s++) {
+      if (S.hw[s] !== 1 || seen[s]) continue;
+      let sp = 0, dev = 0; stack[sp++] = s; seen[s] = 1; region.length = 0;
+      while (sp) {
+        const i = stack[--sp], x = i % w; region.push(i);
+        dev += Math.abs(L[i] - (den[i] > 0.05 ? num[i] / den[i] : L[i]));
+        for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w])
+          if (j >= 0 && j < n && S.hw[j] === 1 && !seen[j]) { seen[j] = 1; stack[sp++] = j; }
+      }
+      if (dev / region.length < 5) for (const i of region) plain[i] = 1;
+    }
+  }
   const photo = boxBlur(restore, w, h, 1);
   // How much of the render shows: paint, plus anything in and around glass panes and cubbies
   const shown = new Float32Array(n);
@@ -1310,7 +1331,9 @@ function correctRender(px, c) {
     // Alpha: how much of this render shows (0 = the photo's hardware). Pixels that aren't paint are marked
     // 254 rather than 255, so the quick preview of other colours knows to leave them alone
     const a = Math.round(show[i] * (1 - photo[i]) * 255);
-    out[p] = rgb[0]; out[p + 1] = rgb[1]; out[p + 2] = rgb[2]; out[p + 3] = own[i] || changed[i] ? a : Math.min(254, a);
+    // (253 tells draw() to paint over hardware the photo suggested here)
+    out[p] = rgb[0]; out[p + 1] = rgb[1]; out[p + 2] = rgb[2];
+    out[p + 3] = plain[i] && changed[i] && a === 255 ? 253 : own[i] || changed[i] ? a : Math.min(254, a);
   }  return out;
 }
 
@@ -1368,7 +1391,9 @@ function findHardware(coat) {
       if (l < lo) lo = l; if (l > hi) hi = l;
       if (Math.hypot(a, b) < 8) grey++;
     }
-    const certain = hi - lo >= 40 || (grey > area / 2 && woody <= area / 2);
+    // (a dark knot in light oak is contrasty too, but it's the old finish's own colour: the render decides)
+    // A flat grey patch can be glare on the wood rather than metal, so grey alone needs some shading too
+    const certain = woody <= area / 2 && (hi - lo >= 40 || (grey > area / 2 && hi - lo >= 20));
     for (const i of region) hw[i] = certain ? 1 : 2;
   }
   // One pixel wider to catch the knob's soft edge, but not onto wood (a brown ring shows on a light colour)
@@ -1738,8 +1763,10 @@ function draw(look) {
     o[0] = orig[p]; o[1] = orig[p + 1]; o[2] = orig[p + 2];
     let r, g, b;
     if (P.real && aiOK[i]) {
-      if (hw && hw[i] === 1) return; // keep the original handles and knobs (wood-coloured ones: the render's alpha says)
-      const ak = al * P.real[p + 3] / 255;
+      // keep the original handles and knobs (wood-coloured ones: the render's alpha says; 253: the render found
+      // plain paint where the photo suggested a knob)
+      if (hw && hw[i] === 1 && P.real[p + 3] !== 253) return;
+      const ak = P.real[p + 3] === 253 ? al : al * P.real[p + 3] / 255;
       if (ak <= 0) return;
       r = P.real[p]; g = P.real[p + 1]; b = P.real[p + 2]; al = ak;
     } else {
