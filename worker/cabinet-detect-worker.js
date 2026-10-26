@@ -13,6 +13,10 @@
 // {mode: "hello", turnstile: <token>}; it gets back a signed session that every other request carries.
 // Without that secret nothing is checked, so the page keeps working while it's being set up.
 //
+// Saved for improving the tool (the page tells visitors so where they upload): with a KV namespace bound as
+// SAVES, every photo and the AI's answers for it are kept for 90 days under "<date>/<photo id>/<what>", so
+// real customer kitchens can be replayed in the regression check. Nothing about the visitor is stored.
+//
 // Setup (Cloudflare dashboard): Workers & Pages -> cabinet-detect -> Edit code -> paste this file -> Deploy.
 // The key is a Secret named GEMINI_API_KEY (Settings -> Variables and Secrets); the Turnstile widget's
 // secret key goes in a Secret named TURNSTILE_SECRET.
@@ -30,6 +34,7 @@ const PAINT_LIMIT = 18;                 // colour renders per visitor per day (p
 const PARTS_LIMIT = 10;                 // two-tone part finds per visitor per hour (one per photo, plus retries)
 const HELLO_LIMIT = 30;                 // bot checks per visitor per hour
 const SESSION_MS = 3 * 60 * 60 * 1000;  // a passed bot check is good for 3 hours
+const KEEP_SECONDS = 90 * 24 * 60 * 60; // saved photos and answers delete themselves after 90 days
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
 
 const PROMPT = `Edit this photo for a cabinet-painting preview.
@@ -174,8 +179,16 @@ async function render(env, jpeg, aspect, prompt, size) {
   return { image: `data:${inline.mimeType || inline.mime_type || "image/png"};base64,${inline.data}` };
 }
 
+// Keep a photo or answer (a data URL) for the regression check, after the reply has gone out
+function keep(env, ctx, photo, what, dataUrl, meta) {
+  if (!env.SAVES || !photo || !dataUrl) return;
+  const key = `${new Date().toISOString().slice(0, 10)}/${photo}/${what}`;
+  ctx.waitUntil(env.SAVES.put(key, dataUrl, { expirationTtl: KEEP_SECONDS, metadata: meta || {} })
+    .catch(e => console.log("Save failed", key, String(e))));
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get("Origin") || "";
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(origin) });
     if (request.method !== "POST") return reply({ error: "POST a photo to use this endpoint" }, 405, origin);
@@ -206,6 +219,8 @@ export default {
     }
     const aspect = ASPECTS.includes(body.aspect) ? body.aspect : null;
     const jpeg = image.slice(image.indexOf(",") + 1);
+    // The page's random id for this photo (not the visitor), so a photo and its answers are kept together
+    const photo = /^[a-z0-9]{8,16}$/.test(body.photo || "") ? body.photo : "";
 
     const t0 = Date.now();
     // Limits per visitor (IP) and, with the bot check on, per session too
@@ -217,6 +232,7 @@ export default {
     if (mode === "parts") {
       const marked = await render(env, jpeg, aspect, PARTS_PROMPT);
       if (marked.error) return reply({ error: marked.error }, 502, origin);
+      keep(env, ctx, photo, "parts", marked.image);
       return reply({ image: marked.image, model: MODEL, seconds: Math.round((Date.now() - t0) / 100) / 10 }, 200, origin);
     }
     if (body.mode === "paint") {
@@ -226,11 +242,17 @@ export default {
       }
       const painted = await render(env, jpeg, aspect, paintPrompt({ num: c.num, name: c.name.replace(/[^\w\s'-]/g, ""), hex: c.hex }), "2K"); // 2K: sharp enough for a full-screen phone view
       if (painted.error) return reply({ error: painted.error }, 502, origin);
+      keep(env, ctx, photo, c.num, painted.image);
       return reply({ image: painted.image, model: MODEL, seconds: Math.round((Date.now() - t0) / 100) / 10 }, 200, origin);
     }
     // Both renders at once: magenta says where the cabinets are, grey says how the paint should look
     const [found, coat] = await Promise.all([render(env, jpeg, aspect, PROMPT), render(env, jpeg, aspect, GREY_PROMPT)]);
     if (found.error) return reply({ error: found.error }, 502, origin);
+    // (the photo as sent: padded to the AI's shape, with the photo's own size to cut the padding off again)
+    const size = Array.isArray(body.size) && body.size.length === 2 && body.size.every(v => Number.isInteger(v) && v > 0 && v < 10000) ? body.size : null;
+    keep(env, ctx, photo, "photo", image, { aspect, size });
+    keep(env, ctx, photo, "magenta", found.image);
+    keep(env, ctx, photo, "grey", coat.image);
     return reply({
       image: found.image,
       grey: coat.image || null, // the page falls back to its own shading if this one failed

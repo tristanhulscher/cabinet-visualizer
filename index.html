@@ -81,7 +81,16 @@
   .busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(255,255,255,.4); pointer-events: none; line-height: 1.4; }
 
   .noise-note { margin: 8px 0 0; font-size: 13px; color: #8a4b00; }
-  .bot-check { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 50; }
+  /* The bot check is invisible for almost everyone; when Cloudflare wants a tap, it's a card in the middle of
+     the screen with the page dimmed behind it, so nobody misses it */
+  .bot-check { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 60; }
+  .bot-check.ask {
+    background: #fff; color: #222; padding: 18px 20px 14px; border-radius: 14px; text-align: center;
+    box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .5), 0 10px 40px rgba(0, 0, 0, .35);
+  }
+  .bot-check.ask::before { content: "One quick check before we paint"; display: block; font-weight: 700; font-size: 17px; margin-bottom: 4px; }
+  .bot-check.ask::after { content: "Tap the box to show you're not a robot."; display: block; font-size: 14px; color: #555; margin-top: 8px; }
+  .keep-note { margin: 10px 0 0; font-size: 12.5px; color: var(--muted, #777); text-align: center; }
   .hint {
     margin: 12px 0 0; padding: 10px 14px; border-radius: 10px;
     background: color-mix(in srgb, var(--accent) 9%, #fff); border: 1px solid color-mix(in srgb, var(--accent) 25%, #fff);
@@ -218,6 +227,7 @@
       <div id="tip2"><b>2</b>We find your cabinets and paint them automatically.</div>
       <div><b>3</b>Tap a colour to see it instantly. Compare before and after.</div>
     </div>
+    <p class="keep-note">Photos you upload are kept for 90 days to help us improve this tool.</p>
   </section>
 
   <!-- Step 2: editor -->
@@ -289,7 +299,7 @@
   <footer>
     <p>Colours on screen are a preview only and vary by device and lighting. Always check a physical paint chip before you decide.</p>
     <p>Sherwin-Williams colour names and numbers are trademarks of The Sherwin-Williams Company. <span id="brandFoot"></span></p>
-    <p id="aiNote" hidden>To find your cabinets, a copy of your photo is analysed by Google's Gemini AI. We don't keep your photo unless you send it with a quote request.</p>
+    <p id="aiNote" hidden>To find your cabinets, a copy of your photo is analysed by Google's Gemini AI. We keep your photo and its previews for 90 days to improve this tool, then they're deleted automatically. Nothing else about you is kept unless you send a quote request.</p>
   </footer>
 </div>
 
@@ -526,8 +536,8 @@ function botToken() {
         sitekey: CONFIG.turnstileSiteKey, appearance: "interaction-only",
         callback: token => tsWaiter && tsWaiter.ok(token),
         // Rarely, Cloudflare wants a tap on its box; say so, or the customer would just see "finding…"
-        "before-interactive-callback": () => { botNeedsTap = true; updateHint(); },
-        "after-interactive-callback": () => { botNeedsTap = false; updateHint(); },
+        "before-interactive-callback": () => { botNeedsTap = true; $("botCheck").classList.add("ask"); updateHint(); },
+        "after-interactive-callback": () => { botNeedsTap = false; $("botCheck").classList.remove("ask"); updateHint(); },
         "error-callback": () => { tsWaiter && tsWaiter.bad(new Error("bot check error")); }
       });
     };
@@ -565,7 +575,7 @@ async function callAI(body) {
     return data;
   }
 }
-const paintBody = (st, c) => ({ image: st.pad.image, aspect: st.pad.aspect, mode: "paint", color: { num: c.num, name: c.name, hex: c.hex.slice(1) } });
+const paintBody = (st, c) => ({ image: st.pad.image, aspect: st.pad.aspect, photo: st.pad.id, mode: "paint", color: { num: c.num, name: c.name, hex: c.hex.slice(1) } });
 const fetchPaint = (st, c) => callAI(paintBody(st, c)).then(d => st.pad.unpad(d.image));
 
 /* ---------- AI cabinet detection ---------- */
@@ -599,7 +609,9 @@ function padPhoto() {
     mx.drawImage(img, ox * sx, oy * sy, W * sx, H * sy, 0, 0, W, H);
     return mx.getImageData(0, 0, W, H).data;
   };
-  return { image: c.toDataURL("image/jpeg", 0.88), aspect: `${aw}:${ah}`, unpad };
+  // A random id for this photo, so the service can keep the photo and its answers together (see the Worker)
+  const id = Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(36).padStart(2, "0")).join("").slice(0, 12);
+  return { image: c.toDataURL("image/jpeg", 0.88), aspect: `${aw}:${ah}`, unpad, id, size: [W, H] };
 }
 
 async function autoDetect() {
@@ -617,7 +629,7 @@ async function autoDetect() {
     // and one more try usually comes back clean
     for (let attempt = 0; attempt < 2; attempt++) {
       st.detectFailed = false;
-      const data = await callAI({ image: st.pad.image, aspect: st.pad.aspect });
+      const data = await callAI({ image: st.pad.image, aspect: st.pad.aspect, photo: st.pad.id, size: st.pad.size });
       if (!photos.includes(st)) return; // started over meanwhile
       const [found, coat] = await Promise.all([st.pad.unpad(data.image), data.grey ? st.pad.unpad(data.grey).catch(() => null) : null]);
       if (!photos.includes(st)) return;
@@ -1517,7 +1529,7 @@ async function findParts(st) {
   try {
     // A shifted or redrawn answer is turned down in applyParts; one more try usually comes back clean
     for (let attempt = 0; attempt < 2 && !st.parts; attempt++) {
-      const data = await callAI({ image: st.pad.image, aspect: st.pad.aspect, mode: "parts" });
+      const data = await callAI({ image: st.pad.image, aspect: st.pad.aspect, photo: st.pad.id, mode: "parts" });
       if (!photos.includes(st)) return;
       const marked = await st.pad.unpad(data.image);
       if (!photos.includes(st)) return;
@@ -1901,7 +1913,7 @@ function updateHint() {
   if (S.comparing) return hint("Drag across the photo to compare <b>before</b> and <b>after</b>.");
   if (S.tool === "brush") return hint("Paint over any cabinet areas the tap missed.");
   if (S.tool === "erase") return hint("Paint over countertops, handles or walls that shouldn't change.");
-  if (S.detecting && botNeedsTap) return hint("One quick check first: tap <b>Verify you are human</b> at the bottom of the page.", true);
+  if (S.detecting && botNeedsTap) return hint("One quick check first: tap <b>Verify you are human</b> in the box on screen.", true);
   if (S.detecting) return hint("🔍 Finding your cabinets and painting them. This takes about 20 seconds, so hang tight…");
   if (AUTO && S.autoFound && S.two) {
     if (S.partsBusy) return hint("🔍 Finding your uppers, lowers and island. This takes about 20 seconds…");
