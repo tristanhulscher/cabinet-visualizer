@@ -702,9 +702,10 @@ function applyMagenta(ed, coat) {
       if ((Math.max(R, G, B) - Math.min(R, G, B) < 22 && diff > minChange) || (pc >= 6 && cc < pc * 0.5 && diff < 30)) coatCh[i] = 1;
     }
   }
-  // White or light grey cabinets against a white ceiling or wall: there's almost no edge in the photo to snap
-  // to, and the snapping wandered into a wavy line. The AI's own outline is straighter there
-  const soft = coat && coatChange(finish(core)) > 18 ? Float32Array.from(core) : snapEdges(core, undefined, coatCh);
+  // White or light grey cabinets against a white ceiling or wall: the grey coat's re-lighting of the wall let the
+  // snapping wander outward into a wavy line, so there it may move out by 2 pixels at most (the AI's own outline,
+  // unsnapped, is lumpy)
+  const soft = snapEdges(core, undefined, coat && coatChange(finish(core)) > 18 ? new Uint8Array(n) : coatCh);
   // Light and shadow for the new paint come from the AI's grey final coat (or, without one, from its
   // magenta render): door shapes and room lighting, none of the old finish's grain or glare
   const s = new Float32Array(n), cf = Float32Array.from(core);
