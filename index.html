@@ -90,6 +90,10 @@
   }
   .bot-check.ask::before { content: "One quick check before we paint"; display: block; font-weight: 700; font-size: 17px; margin-bottom: 4px; }
   .bot-check.ask::after { content: "Tap the box to show you're not a robot."; display: block; font-size: 14px; color: #555; margin-top: 8px; }
+  .only-note {
+    display: inline-block; margin: 10px 0 8px; padding: 8px 12px; border-radius: 10px; font-size: 15px;
+    background: #fff4e0; border: 1px solid #f0c674; color: #4a3500;
+  }
   .resume {
     display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
     margin: 0 0 14px; padding: 14px 16px; border-radius: 12px; background: #eef4ff; border: 1px solid #c9dafc;
@@ -218,6 +222,7 @@
   <header>
     <h1 id="title">See your cabinets in a new colour</h1>
     <p id="intro">Upload a photo of your kitchen and see your cabinets in any Sherwin-Williams colour in seconds.</p>
+    <p class="only-note"><b>Cabinets only.</b> Walls, trim, counters and everything else stay as they are in your photo.</p>
   </header>
 
   <!-- Step 1: upload -->
