@@ -45,7 +45,9 @@ the sides and back of any island or peninsula cabinetry. Cover the whole cabinet
 Do NOT change anything else, not even slightly: keep walls, ceiling, countertops, backsplash, tile,
 appliances, range hood, sink, faucet, windows, floor, lights, handles and knobs, glass panes in doors,
 and every object exactly as they are. Keep the same framing, size and perspective; do not crop,
-zoom, straighten or re-light the photo. Grey borders around the photo must stay grey.`;
+zoom, straighten or re-light the photo. Grey borders around the photo must stay grey.
+Door frames, door and window casings, baseboards and other wall trim are not cabinetry: keep them as they
+are, even when they're the same wood as the cabinets.`;
 
 // Second render: the cabinets in an even mid-grey final coat. The page takes the light and shadow from
 // it and tints it to the exact Sherwin-Williams colour, so the paint looks like a real photo
@@ -59,7 +61,9 @@ panel profiles and edges of the cabinets so it looks like a real photo.
 Do NOT change anything else, not even slightly: keep walls, ceiling, countertops, backsplash, tile,
 appliances, range hood, sink, faucet, windows, floor, lights, handles and knobs, glass panes in doors,
 and every object exactly as they are. Keep the same framing, size and perspective; do not crop,
-zoom, straighten or re-light the photo. Grey borders around the photo must stay grey.`;
+zoom, straighten or re-light the photo. Grey borders around the photo must stay grey.
+Door frames, door and window casings, baseboards and other wall trim are not cabinetry: keep them as they
+are, even when they're the same wood as the cabinets.`;
 
 // Two-tone only (asked for once the customer turns it on): each cabinet in a marker colour for its part of
 // the kitchen. The page only uses it to split the cabinets it already found into uppers, lowers and island
@@ -76,7 +80,9 @@ Cover each cabinet surface edge to edge.
 Do NOT change anything else, not even slightly: keep walls, ceiling, countertops, backsplash, tile,
 appliances, range hood, sink, faucet, windows, floor, lights, handles and knobs, glass panes in doors,
 and every object exactly as they are. Keep the same framing, size and perspective; do not crop,
-zoom, straighten or re-light the photo. Grey borders around the photo must stay grey.`;
+zoom, straighten or re-light the photo. Grey borders around the photo must stay grey.
+Door frames, door and window casings, baseboards and other wall trim are not cabinetry: keep them as they
+are, even when they're the same wood as the cabinets.`;
 
 // Third kind of render, one per colour the customer picks: the cabinets painted in that actual
 // Sherwin-Williams colour. The page keeps only the cabinets from it and corrects it to the exact chip
@@ -88,11 +94,14 @@ grain. Keep crisp, realistic detail on door profiles and edges, with the room's 
 shadows so it looks like a real photograph. Use a smooth low-sheen finish: no mirror-like
 reflections, no window reflections, no light streaks or glare on the doors.
 Keep every door's design exactly: glass-front doors stay glass, showing the same items inside;
-open shelves stay open with the same items; never turn glass or open cabinets into solid doors.
+open shelves stay open with the same items; never turn glass or open cabinets into solid doors. Paint the
+visible front edges of the shelves behind glass doors and in open cabinets in the same colour too.
 
 Do NOT change anything else: keep walls, ceiling, countertops, backsplash, appliances, range hood, sink,
 faucet, windows, floor, lights, handles and knobs, and every object exactly as they are. Keep the same
-framing, size and perspective. Grey borders around the photo must stay grey.`;
+framing, size and perspective. Grey borders around the photo must stay grey.
+Door frames, door and window casings, baseboards and other wall trim are not cabinetry: keep them as they
+are, even when they're the same wood as the cabinets.`;
 
 const hits = new Map(); // ip -> [timestamps]
 
