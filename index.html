@@ -1074,19 +1074,25 @@ function roomChip(c) {
   return t.map((v, j) => v + (lit[j] - v) * share);
 }
 
-// A final coat is smooth and evenly coloured. The AI's render still carries faint grain and blotches (they
-// read as a thin coat that needs another one): smooth them out within the painted area (m), while door
-// profiles, frame edges and shadow lines, much stronger than that texture, stay crisp (an edge-preserving
-// guided filter on the lightness); the colour (a, b) evens out across each few pixels
+// A final coat is smooth and evenly coloured. The AI's render still carries faint grain, blotches and a
+// wandering tint (they read as a thin, patchy coat that needs another one). On the painted cabinet surface (m)
+// the lightness is smoothed where it's flat (an edge-preserving guided filter), so door profiles, frame
+// edges and shadow lines, much stronger than that texture, stay crisp; and the tint is averaged across about
+// a panel, except at edges, where a pull or knob the hardware check missed keeps its own colour.
+// Returns the smoothed lightness and tint, and how much each pixel is an edge (0 flat .. 1 edge)
 function evenCoat(L, A, B, m, w, h) {
-  const n = w * h, r = 4, eps = 4, mf = Float32Array.from(m), den = boxBlur(mf, w, h, r);
-  const mean = x => {
-    const y = new Float32Array(n);
-    for (let i = 0; i < n; i++) y[i] = x[i] * mf[i];
-    const s = boxBlur(y, w, h, r);
-    for (let i = 0; i < n; i++) s[i] = den[i] > 1e-3 ? s[i] / den[i] : 0;
-    return s;
+  const n = w * h, eps = 4, mf = Float32Array.from(m);
+  const meanOver = r => {
+    const den = boxBlur(mf, w, h, r);
+    return x => {
+      const y = new Float32Array(n);
+      for (let i = 0; i < n; i++) y[i] = x[i] * mf[i];
+      const s = boxBlur(y, w, h, r);
+      for (let i = 0; i < n; i++) s[i] = den[i] > 1e-3 ? s[i] / den[i] : 0;
+      return s;
+    };
   };
+  const mean = meanOver(4), wide = meanOver(Math.max(8, Math.round(Math.max(w, h) / 60)));
   const LL = new Float32Array(n);
   for (let i = 0; i < n; i++) LL[i] = L[i] * L[i];
   const mL = mean(L), mLL = mean(LL), ca = new Float32Array(n), cb = new Float32Array(n);
@@ -1094,10 +1100,13 @@ function evenCoat(L, A, B, m, w, h) {
     const v = Math.max(0, mLL[i] - mL[i] * mL[i]); // texture (variance) well under eps is smoothed away
     ca[i] = v / (v + eps); cb[i] = mL[i] - ca[i] * mL[i];
   }
-  const qa = mean(ca), qb = mean(cb), mA = mean(A), mB = mean(B);
-  const Ls = L.slice(), As = A.slice(), Bs = B.slice();
-  for (let i = 0; i < n; i++) if (m[i]) { Ls[i] = qa[i] * L[i] + qb[i]; As[i] = mA[i]; Bs[i] = mB[i]; }
-  return [Ls, As, Bs];
+  const qa = mean(ca), qb = mean(cb), wA = wide(A), wB = wide(B);
+  const Ls = L.slice(), As = A.slice(), Bs = B.slice(), edge = new Float32Array(n);
+  for (let i = 0; i < n; i++) if (m[i]) {
+    Ls[i] = qa[i] * L[i] + qb[i]; edge[i] = qa[i];
+    As[i] = wA[i] + (A[i] - wA[i]) * qa[i]; Bs[i] = wB[i] + (B[i] - wB[i]) * qa[i];
+  }
+  return [Ls, As, Bs, edge];
 }
 
 // Keep the AI's light and detail; shift its colour so the cabinets average to the chip's hue, and anchor
@@ -1124,7 +1133,8 @@ function correctRender(px, c) {
   // The AI tends to over-darken whole panels that face away from the light (an island end turns flat
   // grey). Soften the broad shadow across a panel by a third, and on light colours by up to a half (a fresh
   // white coat looks bright and even, not fading into grey); fine shading (door profiles) is untouched
-  const shade = 0.65 - 0.2 * Math.min(1, Math.max(0, (t[0] - 60) / 30));
+  const light = Math.min(1, Math.max(0, (t[0] - 60) / 30)); // 0 mid tones and darker .. 1 whites
+  const shade = 0.65 - 0.28 * light;
   const r = Math.max(6, Math.round(Math.max(w, h) / 40)), cf = Float32Array.from(aiBase), Lm = new Float32Array(n);
   for (let i = 0; i < n; i++) Lm[i] = L[i] * cf[i];
   const num = boxBlur(Lm, w, h, r), den = boxBlur(cf, w, h, r);
@@ -1139,6 +1149,7 @@ function correctRender(px, c) {
   //    patched dark old interior next to the render's freshly painted interior
   // Colour difference, not just brightness: navy over dark wood is about as dark, but a different colour.
   const changed = new Float32Array(n), own = new Uint8Array(n), restore = new Float32Array(n), { Lb, Ab, Bb } = S, fin = finish(aiBase);
+  const rim = boxBlur(cf, w, h, 2); // 1 = at least 2 pixels inside the outline
   let coat = null;
   if (S.coatPainted) { // only solid patches count, single pixels would speckle
     coat = new Float32Array(n);
@@ -1151,7 +1162,9 @@ function correctRender(px, c) {
     const tA = t[1] - Ab[i], tB = t[2] - Bb[i], tl = Math.hypot(tA, tB);
     const toward = tl > 10 && ((A[i] - Ab[i]) * tA + (B[i] - Bb[i]) * tB) / tl > Math.max(5, 0.35 * tl);
     if (Math.hypot(L[i] - Lb[i], A[i] - Ab[i], B[i] - Bb[i]) > 12 || toward) changed[i] = 1;
-    else if (aiBase[i] && ((coat && coat[i] > 0.6) || finishInside(i, fin))) { changed[i] = 1; own[i] = 1; }
+    // (not right at the outline: a dark line there is the shadow under a countertop or crown, which the render
+    // keeps, and painting it ourselves dotted it with white)
+    else if (aiBase[i] && rim[i] > 0.999 && ((coat && coat[i] > 0.6) || finishInside(i, fin))) { changed[i] = 1; own[i] = 1; }
   }
   // Close thin unpainted seams (a 1-3px line where a door meets the crown or a frame) so they don't show
   // as a dashed line of old finish; bigger unpainted areas (glass, open shelves) are untouched
@@ -1175,17 +1188,28 @@ function correctRender(px, c) {
   // The paint itself: an even final coat (see evenCoat), not on handles or what's behind glass. Its detail
   // (door profiles, lit edges) keeps full strength where the colour is darkened (scaling it with the colour
   // flattened navy and other dark colours), and those edges are sharpened a little and given more definition
-  // (the AI's render is softer than a photo). With the grain smoothed away first, only real edges (profiles,
-  // frames, shadow lines) are strengthened
+  // (the AI's render is softer than a photo), only where there is a real edge: in flat paint that would only
+  // strengthen blotches. All of it on the cabinet surface itself, so the ceiling or counter beside it can't
+  // leave a halo or a dashed line along the cabinet's edge
   const coatOK = new Uint8Array(n);
-  for (let i = 0; i < n; i++) coatOK[i] = aiOK[i] && !restore[i] && !(S.hw && S.hw[i]) && !(S.inner && S.inner[i]) ? 1 : 0;
-  const [Ls, As, Bs] = evenCoat(L, A, B, coatOK, w, h);
-  const okF = Float32Array.from(aiOK), sN = boxBlur(Ls, w, h, 1), sD = boxBlur(okF, w, h, 1);
-  const mN = boxBlur(Ls, w, h, 4), mD = boxBlur(okF, w, h, 4);
+  for (let i = 0; i < n; i++) coatOK[i] = aiBase[i] && !restore[i] && !(S.hw && S.hw[i]) && !(S.inner && S.inner[i]) ? 1 : 0;
+  const [Ls, As, Bs, edge] = evenCoat(L, A, B, coatOK, w, h);
+  const cF = Float32Array.from(coatOK), LsC = new Float32Array(n);
+  for (let i = 0; i < n; i++) LsC[i] = Ls[i] * cF[i];
+  const sN = boxBlur(LsC, w, h, 1), sD = boxBlur(cF, w, h, 1), mN = boxBlur(LsC, w, h, 4), mD = boxBlur(cF, w, h, 4);
+  const eN = boxBlur(LsC, w, h, 2), eD = boxBlur(cF, w, h, 2);
   for (let i = 0; i < n; i++) {
     if (!aiOK[i]) continue;
-    const b0 = den[i] > 0.05 ? num[i] / den[i] : L[i], broad = b0 * k, fine = (Ls[i] - b0) * Math.max(1, k);
-    const crisp = 0.4 * (Ls[i] - sN[i] / Math.max(sD[i], 1e-3)) + 0.4 * (Ls[i] - mN[i] / Math.max(mD[i], 1e-3));
+    const b0 = den[i] > 0.05 ? num[i] / den[i] : L[i], broad = b0 * k;
+    // Gentle lightness wobbles across a panel (a couple of points) mostly flatten out, so a fresh coat reads
+    // even; profile lines and shadows, much stronger, pass almost untouched
+    // Right along the cabinet's outer edge (under a countertop, under a crown) the AI often draws its shadow
+    // line broken into dots: there the lightness is evened out along the edge first
+    let d = (coatOK[i] && mD[i] <= 0.999 ? eN[i] / Math.max(eD[i], 1e-3) : Ls[i]) - b0;
+    if (coatOK[i]) d *= d * d / (d * d + 4);
+    const fine = d * Math.max(1, k);
+    // (not right at the cabinet's outer edge: there it only turns the render's outline into a dashed line)
+    const crisp = coatOK[i] && mD[i] > 0.999 ? edge[i] * (0.4 * (Ls[i] - sN[i] / sD[i]) + 0.4 * (Ls[i] - mN[i] / mD[i])) : 0;
     Lr[i] = (broad < litK ? litK - (litK - broad) * shade : broad) + fine + crisp;
     Lo[i] = ownL * Math.pow(Math.min(2.5, Math.max(0.15, S.aiY[i] / S.aiMean)), 0.45);
   }
@@ -1208,7 +1232,8 @@ function correctRender(px, c) {
     // with the same brightness correction as the paint around it, so there's no seam where paint was lifted.
     if (S.inner && S.inner[i]) { own[i] = 0; changed[i] = 0; }
     const rgb = own[i] ? labToRgb(roll(Lo[i] + offset(i)), t[1], t[2])
-      : changed[i] ? labToRgb(roll(Lr[i]), As[i] + t[1] - mA, Bs[i] + t[2] - mB)
+      // (a white keeps only half the render's tint wobble: it should read as one clean chip colour)
+      : changed[i] ? labToRgb(roll(Lr[i]), t[1] + (As[i] - mA) * (1 - 0.5 * light), t[2] + (Bs[i] - mB) * (1 - 0.5 * light))
       : labToRgb(Math.min(100, Math.max(0, Lr[i])), A[i], B[i]);
     // Alpha: how much of this render shows (0 = the photo's hardware). Pixels that aren't paint are marked
     // 254 rather than 255, so the quick preview of other colours knows to leave them alone
@@ -1579,7 +1604,13 @@ function maskChanged() {
   const { w, h, mask, Yb } = S, n = w * h;
   S.alpha = boxBlur(Float32Array.from(mask), w, h, 1);
   // Where the selection is still what the AI found, use its edge-snapped soft coverage
-  if (S.aiSoft) for (let i = 0; i < n; i++) if (mask[i] === S.aiBase[i]) S.alpha[i] = S.aiSoft[i];
+  if (S.aiSoft) {
+    for (let i = 0; i < n; i++) if (mask[i] === S.aiBase[i]) S.alpha[i] = S.aiSoft[i];
+    // Along the outline the edge can step pixel by pixel (paint, old wood, paint...), which shows as a dotted
+    // line under a countertop: a one-pixel blend there turns it into one clean line
+    const soft = boxBlur(S.alpha, w, h, 1);
+    for (let i = 0; i < n; i++) if (S.alpha[i] > 0 && S.alpha[i] < 1 || soft[i] > 0.02 && soft[i] < 0.98) S.alpha[i] = soft[i];
+  }
   let sum = 0, cnt = 0;
   for (let i = 0; i < n; i++) if (mask[i]) { sum += Yb[i]; cnt++; }
   S.yMean = cnt ? sum / cnt : 0.2;
