@@ -90,6 +90,13 @@
   }
   .bot-check.ask::before { content: "One quick check before we paint"; display: block; font-weight: 700; font-size: 17px; margin-bottom: 4px; }
   .bot-check.ask::after { content: "Tap the box to show you're not a robot."; display: block; font-size: 14px; color: #555; margin-top: 8px; }
+  .resume {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    margin: 0 0 14px; padding: 14px 16px; border-radius: 12px; background: #eef4ff; border: 1px solid #c9dafc;
+  }
+  .resume b { display: block; font-size: 16px; }
+  .resume span { font-size: 14px; color: #444; }
+  .resume[hidden] { display: none; }
   .keep-note { margin: 10px 0 0; font-size: 12.5px; color: var(--muted, #777); text-align: center; }
   .hint {
     margin: 12px 0 0; padding: 10px 14px; border-radius: 10px;
@@ -215,6 +222,10 @@
 
   <!-- Step 1: upload -->
   <section id="start">
+    <div class="resume" id="resume" hidden>
+      <div><b>Welcome back</b><span>Your kitchen and colours are saved on this device.</span></div>
+      <button class="btn primary" id="resumeBtn" type="button">Continue with my kitchen</button>
+    </div>
     <label class="drop" id="drop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h3l2-3h6l2 3h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="4"/></svg>
       <strong>Upload or take a photo of your cabinets</strong>
@@ -433,6 +444,52 @@ const UI_KEYS = ["color", "tool", "comparing", "split", "showSel", "two", "look"
 // Run fn with S temporarily set to another photo (for answers that arrive for a photo not on screen)
 function withState(st, fn) { const prev = S; S = st; try { return fn(); } finally { S = prev; } }
 
+/* ---------- coming back later ---------- */
+// The customer's photos, the AI's answers for them and their colours are kept in this browser (IndexedDB) for
+// 30 days, so coming back shows their kitchen again straight away: the answers are replayed, so there are no new
+// AI calls and nothing is counted again. "Start over" clears it.
+const KEEP_DAYS = 30;
+const keep = (() => {
+  let db = null;
+  const open = () => db || (db = new Promise((ok, bad) => {
+    const r = indexedDB.open("cabinet-visualizer", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+    r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error);
+  }));
+  const run = (mode, fn) => open().then(d => new Promise((ok, bad) => {
+    const t = d.transaction("kv", mode), q = fn(t.objectStore("kv"));
+    t.oncomplete = () => ok(q.result); t.onerror = () => bad(t.error);
+  }));
+  return {
+    get: k => run("readonly", s => s.get(k)).catch(() => null),
+    put: (k, v) => run("readwrite", s => s.put(v, k)).catch(() => {}),
+    clear: () => run("readwrite", s => s.clear()).catch(() => {})
+  };
+})();
+const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(36).padStart(2, "0")).join("").slice(0, 12);
+// An AI answer is kept under the photo it's for, what was asked, and the colour
+const answerKey = body => body.photo ? `a|${body.photo}|${body.mode || "find"}|${body.color ? body.color.num : ""}` : null;
+let sessionTimer = 0;
+function saveSession() {
+  clearTimeout(sessionTimer);
+  sessionTimer = setTimeout(() => {
+    const ids = photos.map(st => st.keepId).filter(Boolean);
+    if (!ids.length) return;
+    keep.put("session", { at: Date.now(), photos: ids, saved: G.saved.map(c => c.num), color: S.color && S.color.num,
+      two: !!S.two, look: S.look ? S.look.map(c => c.num) : null, part: S.part || 0 });
+  }, 300);
+}
+async function resume() {
+  const s = await keep.get("session");
+  const files = s ? await Promise.all(s.photos.map(id => keep.get("photo|" + id))) : [];
+  if (!s || files.some(f => !f)) { keep.clear(); $("resume").hidden = true; return; }
+  G.saved.push(...s.saved.map(n => BY_NUM[n]).filter(Boolean));
+  // The colour on screen is one that's already photo-real, so nothing new is rendered just by coming back
+  S.color = BY_NUM[s.color] && G.saved.includes(BY_NUM[s.color]) ? BY_NUM[s.color] : G.saved[0] || S.color;
+  if (s.two && s.look) { S.two = true; S.look = s.look.map(n => BY_NUM[n] || S.color); S.part = s.part; partsStarted = true; }
+  await loadFiles(files, s.photos);
+}
+
 /* ---------- loading a photo ---------- */
 const fileInput = $("file"), drop = $("drop");
 fileInput.addEventListener("change", () => { loadFiles(fileInput.files); fileInput.value = ""; });
@@ -440,14 +497,18 @@ fileInput.addEventListener("change", () => { loadFiles(fileInput.files); fileInp
 ["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", ev => loadFiles(ev.dataTransfer.files));
 
-async function loadFiles(list) {
+// ids: the kept ids of photos coming back (see resume)
+let nextKeep = null;
+async function loadFiles(list, ids) {
   const files = [...list].filter(f => f.type.startsWith("image/")).slice(0, MAX_PHOTOS - photos.length);
   if (!files.length) { if (list.length) alert(photos.length >= MAX_PHOTOS ? `You can add up to ${MAX_PHOTOS} angles.` : "Please choose a photo (JPG or PNG)."); return; }
-  for (const file of files) {
+  for (const [j, file] of files.entries()) {
     const url = URL.createObjectURL(file), img = new Image();
     try {
       await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = url; });
-      setup(img);
+      nextKeep = { id: ids ? ids[j] : newId(), back: !!ids };
+      if (!ids) keep.put("photo|" + nextKeep.id, file);
+      setup(img); nextKeep = null;
     } catch (e) { alert("Sorry, that photo couldn't be opened. Try a JPG or PNG."); }
     finally { URL.revokeObjectURL(url); }
   }
@@ -456,8 +517,8 @@ async function loadFiles(list) {
 function setup(img) {
   // A new angle gets its own state; the colour and mode carry over from the current one
   const ui = {}; for (const k of UI_KEYS) ui[k] = S[k];
-  S = { ...ui, yMean: 0.2, photoId: (S.photoId || 0) + 1 };
-  photos.push(S);
+  S = { ...ui, yMean: 0.2, photoId: (S.photoId || 0) + 1, keepId: nextKeep ? nextKeep.id : newId(), back: !!(nextKeep && nextKeep.back) };
+  photos.push(S); saveSession();
   const k = Math.min(1, CONFIG.maxSize / Math.max(img.naturalWidth, img.naturalHeight));
   const w = Math.round(img.naturalWidth * k), h = Math.round(img.naturalHeight * k);
   for (const c of [before, after]) { c.width = w; c.height = h; }
@@ -564,6 +625,14 @@ function getSession(stale) {
   return sessionWait;
 }
 async function callAI(body) {
+  // Asked before (this customer coming back): the kept answer, no AI call
+  const key = answerKey(body), hit = key && await keep.get(key);
+  if (hit) return hit;
+  const data = await askAI(body);
+  if (key) keep.put(key, data);
+  return data;
+}
+async function askAI(body) {
   let used = null;
   for (let attempt = 0; ; attempt++) {
     used = await getSession(attempt ? used : null);
@@ -611,9 +680,8 @@ function padPhoto() {
     mx.drawImage(img, ox * sx, oy * sy, W * sx, H * sy, 0, 0, W, H);
     return mx.getImageData(0, 0, W, H).data;
   };
-  // A random id for this photo, so the service can keep the photo and its answers together (see the Worker)
-  const id = Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(36).padStart(2, "0")).join("").slice(0, 12);
-  return { image: c.toDataURL("image/jpeg", 0.88), aspect: `${aw}:${ah}`, unpad, id, size: [W, H] };
+  // This photo's id, so the service (see the Worker) and this browser (see keep) keep its answers together
+  return { image: c.toDataURL("image/jpeg", 0.88), aspect: `${aw}:${ah}`, unpad, id: S.keepId, size: [W, H] };
 }
 
 async function autoDetect() {
@@ -625,7 +693,7 @@ async function autoDetect() {
     // result arrives ~10s sooner. It's only kept (and counted) once the cabinets are found.
     st.early = {};
     const first = [...G.saved, ...[...G.pending].map(num => BY_NUM[num])];
-    for (const c of lookColours()) if (!first.includes(c) && rendersLeft() > 0) first.push(c);
+    if (!st.back) for (const c of lookColours()) if (!first.includes(c) && rendersLeft() > 0) first.push(c);
     for (const c of first) { const p = fetchPaint(st, c); p.catch(() => {}); st.early[c.num] = p; }
     // The AI occasionally returns a shifted or redrawn picture; the checks in applyMagenta reject it,
     // and one more try usually comes back clean
@@ -1048,6 +1116,7 @@ function makeThumb(c) {
 }
 
 function updateSaved() {
+  saveSession();
   const box = $("saved");
   if (!S.autoFound || (!S.saved.length && !S.pending.size)) { box.hidden = true; return; }
   box.hidden = false;
@@ -1673,7 +1742,7 @@ const hueGap = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360
 
 $("restart").onclick = () => {
   // A new kitchen starts in one colour (two-tone's extra AI pass only runs once it's asked for)
-  photos.length = 0; G.saved.length = 0; G.pending.clear(); partsStarted = false; S.two = false; S.look = null;
+  photos.length = 0; G.saved.length = 0; G.pending.clear(); partsStarted = false; S.two = false; S.look = null; keep.clear();
   fileInput.value = ""; $("editor").hidden = true; $("start").hidden = false; fileInput.click();
 };
 
@@ -1981,7 +2050,7 @@ function showColour() {
   const c = S.color;
   document.querySelectorAll(".sw").forEach(b => b.setAttribute("aria-pressed", b.dataset.num === c.num));
   $("curChip").style.background = c.hex; $("curName").textContent = c.name; $("curNum").textContent = "SW " + c.num;
-  render(); updateLook(); if (outImg) { updateHint(); updateBadge(); updateSaved(); }
+  render(); updateLook(); if (outImg) { updateHint(); updateBadge(); updateSaved(); saveSession(); }
 }
 document.querySelectorAll("[data-two]").forEach(b => b.onclick = () => setTwoTone(b.dataset.two === "1"));
 // The One colour / Two-tone switch: at the top of the colour panel on bigger screens, right above the quick
@@ -2137,6 +2206,13 @@ if (BOT_CHECK) getSession().catch(e => console.warn("Bot check:", e)); // ready 
 
 buildPopular();
 updateHint();
+// Coming back within 30 days: offer the kitchen they worked on
+keep.get("session").then(s => {
+  if (!s) return;
+  if (Date.now() - s.at > KEEP_DAYS * 24 * 3600 * 1000) { keep.clear(); return; }
+  $("resume").hidden = false;
+  $("resumeBtn").onclick = () => { $("resume").hidden = true; resume(); };
+});
 </script>
 </body>
 </html>
