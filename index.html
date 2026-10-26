@@ -531,10 +531,12 @@ function botToken() {
   return new Promise((ok, bad) => {
     tsWaiter = { ok, bad };
     const start = () => {
+      $("botCheck").hidden = false;
       if (tsWidget !== null) { turnstile.reset(tsWidget); return; }
       tsWidget = turnstile.render($("botCheck"), {
         sitekey: CONFIG.turnstileSiteKey, appearance: "interaction-only",
-        callback: token => tsWaiter && tsWaiter.ok(token),
+        // Passed: Cloudflare's "Success!" stays put on its own, over the photo, so it goes after a moment
+        callback: token => { setTimeout(() => { $("botCheck").hidden = true; $("botCheck").classList.remove("ask"); }, 1200); tsWaiter && tsWaiter.ok(token); },
         // Rarely, Cloudflare wants a tap on its box; say so, or the customer would just see "finding…"
         "before-interactive-callback": () => { botNeedsTap = true; $("botCheck").classList.add("ask"); updateHint(); },
         "after-interactive-callback": () => { botNeedsTap = false; $("botCheck").classList.remove("ask"); updateHint(); },
