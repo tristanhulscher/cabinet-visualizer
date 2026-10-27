@@ -17,28 +17,60 @@ if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createEl
 t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
 if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  /* Envision's label font (the small spaced capitals on envisionpainting.ca) */
+  @font-face { font-family: "Envision Mono"; src: url("fonts/envision-mono.otf") format("opentype"); font-display: swap; }
   :root {
-    --accent: #1f4e5f;
+    --accent: #009fb8;
+    --accent-hover: color-mix(in srgb, var(--accent) 85%, #000);
     --accent-ink: #ffffff;
     --bg: #ffffff;
-    --panel: #f6f5f2;
-    --ink: #1d1d1b;
-    --muted: #6b6a66;
-    --line: #e2e0da;
-    --radius: 12px;
+    --panel: #f4f4f5;
+    --ink: #09090b;
+    --muted: #525252;
+    --line: #e4e4e7;
+    --dark: #1a1c20;
+    --radius: 6px;
+    --mono: "Envision Mono", ui-monospace, Menlo, monospace;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; }
   body {
     background: var(--bg); color: var(--ink);
-    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font: 16px/1.5 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
+  h1, h2, h3 { color: var(--ink); }
   button, input, textarea { font: inherit; color: inherit; }
   [hidden] { display: none !important; }
-  .app { max-width: 1180px; margin: 0 auto; padding: 20px 16px 28px; }
-  header h1 { font-size: clamp(22px, 4vw, 30px); line-height: 1.15; margin: 0 0 6px; }
-  header p { margin: 0 0 18px; color: var(--muted); }
+  .app { max-width: 1200px; margin: 0 auto; padding: 20px 16px 28px; }
+  .hero h1 { font-size: clamp(28px, 5vw, 44px); line-height: 1.15; letter-spacing: -.05em; font-weight: 700; margin: 0 0 10px; }
+  .hero #intro { margin: 0 0 12px; color: #000; font-size: 17px; }
+  /* "— ENVISION PAINTING LTD." label, as on envisionpainting.ca */
+  .eyebrow { display: flex; align-items: center; gap: 16px; margin: 4px 0 10px; font: 15px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .eyebrow::before { content: ""; width: 24px; height: 2px; background: var(--accent); flex: none; }
+  /* The site's dotted backdrop behind the top of the page, fading out before the content below */
+  body.site { background: linear-gradient(to bottom, transparent 0, transparent 300px, var(--bg) 460px) no-repeat,
+                          radial-gradient(0.8px, rgba(63,63,70,.45) 99%, transparent 100%) 0 0 / 16px 16px, var(--bg); }
+
+  /* Site header (same bar as envisionpainting.ca) */
+  .site-head { position: sticky; top: 0; z-index: 40; background: rgba(255,255,255,.85); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 10px 15px -3px rgba(0,0,0,.1), 0 4px 6px -4px rgba(0,0,0,.1); }
+  .site-head .in { max-width: 1200px; margin: 0 auto; padding: 10px 16px; display: flex; align-items: center; gap: 12px; }
+  .site-head img { height: 40px; width: auto; display: block; }
+  .site-head .spacer { flex: 1; }
+  .trust { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 4px 0 16px; font-size: 14px; color: var(--muted); }
+  .trust b { color: var(--ink); }
+  .trust .stars { color: #f5a623; letter-spacing: 1px; }
+
+  /* Site footer */
+  .site-foot { background: var(--dark); color: #d4d4d8; margin-top: 40px; }
+  .site-foot .in { max-width: 1200px; margin: 0 auto; padding: 32px 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; font-size: 14px; }
+  .site-foot img { height: 44px; width: auto; display: block; margin-bottom: 10px; }
+  .site-foot a { color: #fff; }
+  .site-foot p { margin: 4px 0; }
+  .site-foot b { color: #fff; font-family: var(--mono); font-weight: 400; letter-spacing: .1em; text-transform: uppercase; display: block; margin-bottom: 6px; }
 
   /* Upload */
   .drop {
@@ -53,16 +85,16 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   .drop .sub { color: var(--muted); font-size: 14px; }
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-    padding: 10px 16px; border-radius: 999px; border: 1px solid var(--line);
-    background: #fff; cursor: pointer; font-weight: 600; white-space: nowrap; text-decoration: none;
+    padding: 10px 16px; border-radius: 2px; border: 1px solid var(--line);
+    background: #fff; cursor: pointer; font-weight: 600; white-space: nowrap; text-decoration: none; color: var(--ink);
   }
   .btn:hover { border-color: var(--ink); }
   .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
   .btn.big { padding: 14px 22px; font-size: 16px; }
   .tips { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 14px; }
   .tips div { font-size: 14px; color: var(--muted); padding-left: 26px; position: relative; }
-  .tips b { position: absolute; left: 0; top: 0; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 12px; display: grid; place-items: center; }
+  .tips b { position: absolute; left: 0; top: 0; width: 20px; height: 20px; border-radius: 2px; background: var(--accent); color: #fff; font-size: 12px; display: grid; place-items: center; }
 
   /* Editor */
   .editor { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
@@ -104,25 +136,25 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   .bot-check.ask::before { content: "One quick check before we paint"; display: block; font-weight: 700; font-size: 17px; margin-bottom: 4px; }
   .bot-check.ask::after { content: "Tap the box to show you're not a robot."; display: block; font-size: 14px; color: #555; margin-top: 8px; }
   .only-note {
-    display: inline-block; margin: 10px 0 8px; padding: 8px 12px; border-radius: 10px; font-size: 15px;
-    background: #fff4e0; border: 1px solid #f0c674; color: #4a3500;
+    display: inline-block; margin: 0 0 8px; padding: 8px 12px; border-radius: 2px; font-size: 15px;
+    background: #fff; border: 1px solid var(--line); border-left: 3px solid var(--accent); color: var(--ink);
   }
   .resume {
     display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
-    margin: 0 0 14px; padding: 14px 16px; border-radius: 12px; background: #eef4ff; border: 1px solid #c9dafc;
+    margin: 0 0 14px; padding: 14px 16px; border-radius: var(--radius); background: color-mix(in srgb, var(--accent) 8%, #fff); border: 1px solid color-mix(in srgb, var(--accent) 30%, #fff);
   }
   .resume b { display: block; font-size: 16px; }
   .resume span { font-size: 14px; color: #444; }
   .resume[hidden] { display: none; }
   .keep-note { margin: 10px 0 0; font-size: 12.5px; color: var(--muted, #777); text-align: center; }
   .hint {
-    margin: 12px 0 0; padding: 10px 14px; border-radius: 10px;
+    margin: 12px 0 0; padding: 10px 14px; border-radius: var(--radius);
     background: color-mix(in srgb, var(--accent) 9%, #fff); border: 1px solid color-mix(in srgb, var(--accent) 25%, #fff);
     font-size: 14px;
   }
   .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
-  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; background: var(--panel); }
-  .seg button { border: 0; background: none; padding: 7px 12px; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: 14px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; padding: 3px; background: var(--panel); }
+  .seg button { border: 0; background: none; padding: 7px 12px; border-radius: 2px; cursor: pointer; font-weight: 600; font-size: 14px; }
   .seg button[aria-pressed="true"] { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.15); color: var(--accent); }
   .toolbar .btn { padding: 8px 13px; font-size: 14px; }
   .btn[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
@@ -135,9 +167,9 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   .palette { background: var(--panel); border-radius: var(--radius); padding: 16px; position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
   .current { display: flex; gap: 12px; align-items: center; padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
   .current .chip { width: 56px; height: 56px; border-radius: 10px; border: 1px solid rgba(0,0,0,.12); flex: none; }
-  .current small { color: var(--muted); display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .current small { color: var(--muted); display: block; font: 12px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .1em; }
   .current strong { font-size: 17px; display: block; }
-  .palette h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 8px; }
+  .palette h3 { font: 13px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: 14px 0 8px; }
   .palette h3:first-of-type { margin-top: 4px; }
   .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); gap: 8px; }
   .sw { border: 0; background: none; padding: 0; cursor: pointer; text-align: left; min-width: 0; }
@@ -150,7 +182,7 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   .sw[aria-pressed="true"] i::after { content: "✓"; position: absolute; inset: 0; display: grid; place-items: center; font-style: normal; font-weight: 700; font-size: 20px; color: var(--check, #fff); }
   .sw span { display: block; font-size: 12px; line-height: 1.2; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sw em { display: block; font-size: 11px; font-style: normal; color: var(--muted); }
-  .search { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+  .search { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 2px; background: #fff; }
   .search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   .more-note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
   .quick { display: none; }
@@ -196,16 +228,17 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   footer p { margin: 4px 0; }
 
   /* Quote dialog */
-  dialog { border: 0; border-radius: 16px; padding: 0; width: min(460px, calc(100vw - 32px)); box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+  dialog { border: 0; border-radius: var(--radius); border-top: 4px solid var(--accent); padding: 0; width: min(460px, calc(100vw - 32px)); box-shadow: 0 20px 60px rgba(0,0,0,.3); }
   dialog::backdrop { background: rgba(0,0,0,.45); }
   .dlg { padding: 22px; }
-  .dlg h2 { margin: 0 0 4px; font-size: 21px; }
+  .dlg h2 { margin: 0 0 4px; font-size: 22px; letter-spacing: -.03em; }
   .dlg p { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
   .dlg .picked { display: grid; gap: 6px; padding: 8px 10px; border-radius: 10px; background: var(--panel); margin-bottom: 14px; font-weight: 600; }
   .dlg .picked div { display: flex; align-items: center; gap: 10px; }
   .dlg .picked i { flex: none; width: 28px; height: 28px; border-radius: 6px; border: 1px solid rgba(0,0,0,.12); }
   .field { display: grid; gap: 4px; margin-bottom: 10px; font-size: 13px; font-weight: 600; }
-  .field input, .field textarea { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-weight: 400; width: 100%; }
+  .field input:focus, .field textarea:focus, .field select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .field input, .field textarea { padding: 10px 12px; border: 1px solid #d4d4d8; border-radius: 2px; font-weight: 400; width: 100%; }
   .field textarea { min-height: 70px; resize: vertical; }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .check { display: flex; gap: 8px; align-items: center; font-size: 13px; margin: 4px 0 14px; }
@@ -213,29 +246,34 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   .done { text-align: center; padding: 10px 0; }
 
   /* Landing page sections (only when the page is visited directly, not inside another site's iframe) */
-  .landing { margin-top: 34px; }
-  .landing h2 { font-size: clamp(20px, 3.4vw, 26px); margin: 0 0 6px; }
+  .landing { margin-top: 48px; }
+  .landing h2 { font-size: clamp(24px, 3.6vw, 30px); line-height: 1.2; letter-spacing: -.05em; font-weight: 600; margin: 0 0 8px; }
   .landing > p.lead { margin: 0 0 16px; color: var(--muted); }
   .examples { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
   .examples figure { margin: 0; }
-  .examples img { display: block; width: 100%; border-radius: 10px; }
-  .examples figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; }
-  .why { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
-  .why div { background: var(--panel); border-radius: var(--radius); padding: 14px 16px; }
+  .examples img { display: block; width: 100%; border-radius: var(--radius); }
+  .examples figcaption { font: 13px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
+  .why { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 12px; }
+  .why div { background: #fff; border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: var(--radius); padding: 16px 18px; box-shadow: 0 4px 6px -4px rgba(0,0,0,.08); }
   .why b { display: block; margin-bottom: 4px; }
   .why span { font-size: 14px; color: var(--muted); }
   .faq details { border-bottom: 1px solid var(--line); padding: 12px 0; }
   .faq summary { cursor: pointer; font-weight: 600; }
+  .faq summary::marker { color: var(--accent); }
   .faq p { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
-  .cta { text-align: center; background: var(--panel); border-radius: var(--radius); padding: 24px 16px; }
-  .cta p { margin: 6px 0 14px; color: var(--muted); }
-  .cta a.tel { color: var(--accent); font-weight: 600; }
-  .lead-dlg .field select { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font: inherit; width: 100%; background: #fff; }
+  .cta { text-align: center; background: var(--dark); color: #fff; border-radius: var(--radius); padding: 32px 16px; }
+  .cta h2 { color: #fff; }
+  .cta p { margin: 6px 0 16px; color: #d4d4d8; }
+  .cta a.tel { color: #fff; font-weight: 600; }
+  .lead-dlg .field select { padding: 10px 12px; border: 1px solid #d4d4d8; border-radius: 2px; font: inherit; width: 100%; background: #fff; }
   .lead-dlg .thumbs { display: flex; gap: 8px; margin-bottom: 12px; }
   .lead-dlg .thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; }
   .lead-dlg .consent { font-size: 12px; color: var(--muted); margin: 2px 0 12px; }
 
   @media (max-width: 860px) {
+    /* On phones the header scrolls away, so the photo gets the whole screen while choosing colours */
+    .site-head { position: static; }
+    .site-head img { height: 34px; }
     .examples { grid-template-columns: 1fr 1fr; }
     .examples figure:first-child { grid-column: 1 / -1; }
     .editor { grid-template-columns: minmax(0, 1fr); }
@@ -256,10 +294,19 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
 </head>
 <body>
 <div class="bot-check" id="botCheck"></div>
+<header class="site-head site-only">
+  <div class="in">
+    <a href="https://envisionpainting.ca/" aria-label="Envision Painting home"><img src="img/envision-logo.png" alt="Envision Painting Ltd" width="259" height="80"></a>
+    <span class="spacer"></span>
+    <a class="btn primary" href="tel:+12508132530">Call (250) 813-2530</a>
+  </div>
+</header>
 <div class="app" id="app">
-  <header>
-    <h1 id="title">See your kitchen cabinets painted, before you paint</h1>
+  <header class="hero">
+    <p class="eyebrow">Cabinet colour visualizer</p>
+    <h1 id="title">See Your Kitchen Cabinets Painted, Before You Paint</h1>
     <p id="intro">Upload a photo of your kitchen and see your own cabinets in any Sherwin-Williams colour in about 20 seconds. Free.</p>
+    <div class="trust site-only"><span><span class="stars">★★★★★</span> <b>4.9</b> on Google (276 reviews)</span><span><b>5,000+</b> projects</span><span><b>10-year</b> cabinet warranty</span></div>
     <p class="only-note"><b>Cabinets only.</b> Walls, trim, counters and everything else stay as they are in your photo.</p>
   </header>
 
@@ -351,7 +398,8 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   </section>
 
   <section class="landing" id="examples">
-    <h2>Same kitchen, new cabinets</h2>
+    <p class="eyebrow">Examples</p>
+    <h2>Same Kitchen, New Cabinets</h2>
     <p class="lead">A real kitchen photo run through this tool. Only the cabinets change; your counters, walls and floors stay as they are.</p>
     <div class="examples">
       <figure><img src="img/kitchen-before.jpg" alt="Kitchen with original wood cabinets" loading="lazy"><figcaption>Before</figcaption></figure>
@@ -361,7 +409,8 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   </section>
 
   <section class="landing">
-    <h2>How Envision paints cabinets</h2>
+    <p class="eyebrow">Our process</p>
+    <h2>How Envision Paints Cabinets</h2>
     <p class="lead">Family-run in Greater Victoria, with thousands of homes painted.</p>
     <div class="why">
       <div><b>Sprayed, not brushed</b><span>Doors and drawers come off and are spray-painted on-site for a smooth, glass-like finish.</span></div>
@@ -374,6 +423,7 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   </section>
 
   <section class="landing faq">
+    <p class="eyebrow">FAQ</p>
     <h2>Questions</h2>
     <details><summary>Is it really free?</summary><p>Yes. Upload a photo, try colours, and download your favourite. No cost and no obligation.</p></details>
     <details><summary>How accurate are the colours?</summary><p>Very close, but screens vary. Before you decide, check a physical Sherwin-Williams sample in your kitchen.</p></details>
@@ -382,7 +432,7 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   </section>
 
   <section class="landing cta">
-    <h2>Ready to see yours?</h2>
+    <h2>Ready To See Yours?</h2>
     <p>It takes about 20 seconds. Or call us at <a class="tel" href="tel:+12508132530">(250) 813-2530</a>.</p>
     <button class="btn primary big" id="ctaUpload" type="button">Upload my kitchen photo</button>
   </section>
@@ -393,6 +443,13 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
     <p id="aiNote" hidden>To find your cabinets, a copy of your photo is analysed by Google's Gemini AI. We keep your photo and its previews for 90 days to improve this tool, then they're deleted automatically. Nothing else about you is kept unless you send a quote request.</p>
   </footer>
 </div>
+<footer class="site-foot site-only">
+  <div class="in">
+    <div><img src="img/envision-logo-white.png" alt="Envision Painting Ltd" width="160" height="55"><p>Residential, commercial and strata painters in Greater Victoria, BC.</p></div>
+    <div><b>Contact</b><p><a href="tel:+12508132530">(250) 813-2530</a></p><p><a href="mailto:office@envisionpainting.ca">office@envisionpainting.ca</a></p><p>2859 Gorge View Dr, Victoria, BC V9A 2H8</p></div>
+    <div><b>Hours</b><p>Mon – Fri: 8:30am – 4:30pm</p><p>Sat – Sun: Closed</p><p><a href="https://envisionpainting.ca/">envisionpainting.ca</a></p></div>
+  </div>
+</footer>
 
 <dialog id="leadDlg" class="lead-dlg">
   <form class="dlg" id="leadForm" method="dialog">
@@ -457,7 +514,7 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
 /* ===================== Settings: edit these ===================== */
 const CONFIG = {
   brand: "Envision Painting",          // shown in the footer and on downloaded photos
-  accent: "#1f4e5f",                   // button / highlight colour
+  accent: "#009fb8",                   // button / highlight colour (Envision teal, as on envisionpainting.ca)
   defaultColor: "7006",                // colour selected when a photo is loaded (SW number)
   // Where quote requests go. Fill in ONE of these:
   // Before the AI runs on a new kitchen, ask for the customer's details (sent to leadWebhook) once per device
@@ -2350,7 +2407,8 @@ function sendLead(lead) {
 /* ---------- landing page ---------- */
 // Visited directly (e.g. from a Facebook ad), the page also shows examples, how we work and questions. Inside
 // another site's iframe (the partner's landing page) those sections stay hidden; that page has its own.
-if (parent !== window) document.querySelectorAll(".landing").forEach(el => el.hidden = true);
+if (parent !== window) document.querySelectorAll(".landing, .site-only").forEach(el => el.hidden = true);
+else document.body.classList.add("site");
 $("ctaUpload").onclick = () => {
   if (photos.length) { stage.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
   fileInput.click();
