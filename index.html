@@ -462,7 +462,7 @@ const CONFIG = {
   // Where quote requests go. Fill in ONE of these:
   // Before the AI runs on a new kitchen, ask for the customer's details (sent to leadWebhook) once per device
   leadGate: true,
-  leadWebhook: "",                     // HighLevel "Inbound Webhook" URL: new visualizer leads (and quote requests) go here
+  leadWebhook: "https://services.leadconnectorhq.com/hooks/LbzVlADbi6RAT1xFcIWN/webhook-trigger/169f4c57-a0b8-4943-92d5-60b85c5557ac", // HighLevel "Inbound Webhook" URL: new visualizer leads (and quote requests) go here
   quoteWebhook: "",                    // e.g. a HighLevel or Zapier "inbound webhook" URL (form fields are POSTed to it)
   quoteUrl: "",                        // OR a link to your existing quote page (colour is added as ?color=...)
   detectUrl: "https://cabinet-detect.tristanhulscher.workers.dev/", // AI cabinet detection (Cloudflare Worker)
@@ -2292,7 +2292,9 @@ $("quoteForm").addEventListener("submit", async ev => {
 // runs. So AI is only spent on people who became leads, and the details form is the step right before the payoff.
 // Asked once per device; coming back to a saved kitchen replays answers without asking again.
 // Only once there's somewhere to send the details (a lead nobody receives is worse than no form)
-const GATE = CONFIG.leadGate && !!CONFIG.leadWebhook && /^https:/.test(CONFIG.detectUrl);
+// Off on this computer's test server (regression runs, no test leads in HighLevel) unless ?gate=1
+const GATE = CONFIG.leadGate && !!CONFIG.leadWebhook && /^https:/.test(CONFIG.detectUrl) &&
+  (!/^(localhost|127\.0\.0\.1)$/.test(location.hostname) || /[?&]gate=1/.test(location.search));
 const savedLead = () => { try { return JSON.parse(localStorage.getItem("cv_lead") || "null"); } catch (e) { return null; } };
 // Where the visit came from (ad, campaign), so leads can be traced back to the ad that brought them
 const visit = (() => {
