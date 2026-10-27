@@ -3,7 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cabinet Colour Visualizer</title>
+<title>See Your Cabinets Painted | Envision Painting</title>
+<meta name="description" content="Upload a photo of your kitchen and see your own cabinets in any Sherwin-Williams colour in about 20 seconds. Free, from Envision Painting in Greater Victoria.">
+<meta property="og:title" content="See your kitchen cabinets painted, before you paint">
+<meta property="og:description" content="Upload a photo and see your own cabinets in any Sherwin-Williams colour. Free.">
+<meta property="og:image" content="https://colours.envisionpainting.ca/img/kitchen-white.jpg">
+<!-- Meta pixel (Envision Painting's Pixel). PageView on load; Lead when someone gives their details (see sendLead) -->
+<script>
+// Only on the real site: local test runs mustn't count as page views or leads
+if (/(^|\.)envisionpainting\.ca$|\.github\.io$/.test(location.hostname))
+!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
+if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
+</script>
 <style>
   :root {
     --accent: #1f4e5f;
@@ -199,7 +212,32 @@
   .dlg-actions { display: flex; gap: 8px; justify-content: flex-end; }
   .done { text-align: center; padding: 10px 0; }
 
+  /* Landing page sections (only when the page is visited directly, not inside another site's iframe) */
+  .landing { margin-top: 34px; }
+  .landing h2 { font-size: clamp(20px, 3.4vw, 26px); margin: 0 0 6px; }
+  .landing > p.lead { margin: 0 0 16px; color: var(--muted); }
+  .examples { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .examples figure { margin: 0; }
+  .examples img { display: block; width: 100%; border-radius: 10px; }
+  .examples figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .why { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+  .why div { background: var(--panel); border-radius: var(--radius); padding: 14px 16px; }
+  .why b { display: block; margin-bottom: 4px; }
+  .why span { font-size: 14px; color: var(--muted); }
+  .faq details { border-bottom: 1px solid var(--line); padding: 12px 0; }
+  .faq summary { cursor: pointer; font-weight: 600; }
+  .faq p { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+  .cta { text-align: center; background: var(--panel); border-radius: var(--radius); padding: 24px 16px; }
+  .cta p { margin: 6px 0 14px; color: var(--muted); }
+  .cta a.tel { color: var(--accent); font-weight: 600; }
+  .lead-dlg .field select { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font: inherit; width: 100%; background: #fff; }
+  .lead-dlg .thumbs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .lead-dlg .thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; }
+  .lead-dlg .consent { font-size: 12px; color: var(--muted); margin: 2px 0 12px; }
+
   @media (max-width: 860px) {
+    .examples { grid-template-columns: 1fr 1fr; }
+    .examples figure:first-child { grid-column: 1 / -1; }
     .editor { grid-template-columns: minmax(0, 1fr); }
     .palette { position: static; max-height: none; }
     /* Popular rows scroll sideways on phones so every colour is one swipe away */
@@ -220,8 +258,8 @@
 <div class="bot-check" id="botCheck"></div>
 <div class="app" id="app">
   <header>
-    <h1 id="title">See your cabinets in a new colour</h1>
-    <p id="intro">Upload a photo of your kitchen and see your cabinets in any Sherwin-Williams colour in seconds.</p>
+    <h1 id="title">See your kitchen cabinets painted, before you paint</h1>
+    <p id="intro">Upload a photo of your kitchen and see your own cabinets in any Sherwin-Williams colour in about 20 seconds. Free.</p>
     <p class="only-note"><b>Cabinets only.</b> Walls, trim, counters and everything else stay as they are in your photo.</p>
   </header>
 
@@ -312,12 +350,80 @@
     </aside>
   </section>
 
+  <section class="landing" id="examples">
+    <h2>Same kitchen, new cabinets</h2>
+    <p class="lead">A real kitchen photo run through this tool. Only the cabinets change; your counters, walls and floors stay as they are.</p>
+    <div class="examples">
+      <figure><img src="img/kitchen-before.jpg" alt="Kitchen with original wood cabinets" loading="lazy"><figcaption>Before</figcaption></figure>
+      <figure><img src="img/kitchen-white.jpg" alt="The same kitchen with cabinets in SW 7006 Extra White" loading="lazy"><figcaption>SW 7006 Extra White</figcaption></figure>
+      <figure><img src="img/kitchen-navy.jpg" alt="The same kitchen with cabinets in SW 6244 Naval" loading="lazy"><figcaption>SW 6244 Naval</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="landing">
+    <h2>How Envision paints cabinets</h2>
+    <p class="lead">Family-run in Greater Victoria, with thousands of homes painted.</p>
+    <div class="why">
+      <div><b>Sprayed, not brushed</b><span>Doors and drawers come off and are spray-painted on-site for a smooth, glass-like finish.</span></div>
+      <div><b>Built to last</b><span>Cleaned, sanded and primed, then two finish coats. Covered by our 10-year cabinet warranty.</span></div>
+      <div><b>Clean and safe</b><span>Kitchen masked off, a HEPA air extractor for dust, and low-VOC paint that's safe for kids and pets.</span></div>
+      <div><b>Done in days</b><span>Most kitchens take 4–5 days. You don't need to empty your cabinets.</span></div>
+      <div><b>Protected</b><span>$3M liability insurance, background-checked painters, BBB A+ accredited.</span></div>
+      <div><b>Guaranteed</b><span>Full satisfaction, guaranteed, with a project coordinator and foreman on every job.</span></div>
+    </div>
+  </section>
+
+  <section class="landing faq">
+    <h2>Questions</h2>
+    <details><summary>Is it really free?</summary><p>Yes. Upload a photo, try colours, and download your favourite. No cost and no obligation.</p></details>
+    <details><summary>How accurate are the colours?</summary><p>Very close, but screens vary. Before you decide, check a physical Sherwin-Williams sample in your kitchen.</p></details>
+    <details><summary>Why do you ask for my details?</summary><p>So we can send your colours and help with a quote if you want one. We'll never sell your information.</p></details>
+    <details><summary>Do you paint anything besides cabinets?</summary><p>Yes, interiors and exteriors across Greater Victoria. This tool just shows cabinets.</p></details>
+  </section>
+
+  <section class="landing cta">
+    <h2>Ready to see yours?</h2>
+    <p>It takes about 20 seconds. Or call us at <a class="tel" href="tel:+12508132530">(250) 813-2530</a>.</p>
+    <button class="btn primary big" id="ctaUpload" type="button">Upload my kitchen photo</button>
+  </section>
+
   <footer>
     <p>Colours on screen are a preview only and vary by device and lighting. Always check a physical paint chip before you decide.</p>
     <p>Sherwin-Williams colour names and numbers are trademarks of The Sherwin-Williams Company. <span id="brandFoot"></span></p>
     <p id="aiNote" hidden>To find your cabinets, a copy of your photo is analysed by Google's Gemini AI. We keep your photo and its previews for 90 days to improve this tool, then they're deleted automatically. Nothing else about you is kept unless you send a quote request.</p>
   </footer>
 </div>
+
+<dialog id="leadDlg" class="lead-dlg">
+  <form class="dlg" id="leadForm" method="dialog">
+    <h2>Where should we send your colours?</h2>
+    <p>Your cabinets will be ready in about 20 seconds.</p>
+    <div class="thumbs" id="leadThumbs"></div>
+    <div class="row2">
+      <label class="field">First name<input name="first" required autocomplete="given-name"></label>
+      <label class="field">Last name<input name="last" autocomplete="family-name"></label>
+    </div>
+    <div class="row2">
+      <label class="field">Mobile phone<input name="phone" type="tel" required autocomplete="tel" inputmode="tel"></label>
+      <label class="field">Postal code<input name="postal" required autocomplete="postal-code" placeholder="V8X 1A1"></label>
+    </div>
+    <label class="field">Email (optional)<input name="email" type="email" autocomplete="email"></label>
+    <label class="field">When are you hoping to paint?
+      <select name="timing" required>
+        <option value="">Choose one</option>
+        <option>As soon as possible</option>
+        <option>In the next 1–3 months</option>
+        <option>In 3–6 months</option>
+        <option>Just exploring colours</option>
+      </select>
+    </label>
+    <p class="consent">By continuing, you agree that Envision Painting may contact you about your project by phone, text or email. You can opt out any time.</p>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel" formnovalidate>Not now</button>
+      <button class="btn primary" id="leadSend" value="send">Show my cabinets</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="quote">
   <form class="dlg" id="quoteForm" method="dialog">
@@ -354,6 +460,9 @@ const CONFIG = {
   accent: "#1f4e5f",                   // button / highlight colour
   defaultColor: "7006",                // colour selected when a photo is loaded (SW number)
   // Where quote requests go. Fill in ONE of these:
+  // Before the AI runs on a new kitchen, ask for the customer's details (sent to leadWebhook) once per device
+  leadGate: true,
+  leadWebhook: "",                     // HighLevel "Inbound Webhook" URL: new visualizer leads (and quote requests) go here
   quoteWebhook: "",                    // e.g. a HighLevel or Zapier "inbound webhook" URL (form fields are POSTed to it)
   quoteUrl: "",                        // OR a link to your existing quote page (colour is added as ?color=...)
   detectUrl: "https://cabinet-detect.tristanhulscher.workers.dev/", // AI cabinet detection (Cloudflare Worker)
@@ -551,7 +660,7 @@ function setup(img) {
   if (!S.color) pickColor(BY_NUM[CONFIG.defaultColor] || COLORS[0]);
   setCompare(false); setTool("wand"); updateUndo(); maskChanged();
   stage.scrollIntoView({ behavior: "smooth", block: "start" });
-  if (CONFIG.detectUrl) autoDetect();
+  if (CONFIG.detectUrl) whenLead(autoDetect);
 }
 
 function switchTo(st) {
@@ -1997,6 +2106,8 @@ $("showSel").onclick = () => { S.showSel = !S.showSel; $("showSel").setAttribute
 
 function hint(html, warn) { const el = $("hint"); el.innerHTML = html; el.style.borderColor = warn ? "#d9822b" : ""; }
 function updateHint() {
+  if (typeof leadWaiting !== "undefined" && leadWaiting.some(w => w.st === S))
+    return hint('Almost there: tell us where to send your colours and we\'ll find your cabinets. <button class="btn primary" type="button" onclick="askLead()">Show my cabinets</button>');
   if (S.comparing) return hint("Drag across the photo to compare <b>before</b> and <b>after</b>.");
   if (S.tool === "brush") return hint("Paint over any cabinet areas the tap missed.");
   if (S.tool === "erase") return hint("Paint over countertops, handles or walls that shouldn't change.");
@@ -2135,6 +2246,9 @@ $("quoteBtn").onclick = () => {
     chip.style.background = l.c.hex; t.textContent = l.text; row.append(chip, t); box.append(row);
   }
   $("quoteFields").hidden = false; $("quoteDone").hidden = true;
+  // Prefill from the details they already gave
+  const me = savedLead(), f = $("quoteForm").elements;
+  if (me) { f.name.value ||= [me.first_name, me.last_name].filter(Boolean).join(" "); f.phone.value ||= me.phone || ""; f.email.value ||= me.email || ""; }
   dlg.showModal();
 };
 $("quoteForm").addEventListener("submit", async ev => {
@@ -2155,9 +2269,11 @@ $("quoteForm").addEventListener("submit", async ev => {
   try { parent !== window && parent.postMessage({ type: "cabinet-visualizer:lead", lead: { ...lead, photo: undefined } }, "*"); } catch (e) {}
   const btn = $("sendQuote"); btn.disabled = true; btn.textContent = "Sending…";
   try {
-    if (CONFIG.quoteWebhook) {
+    const hook = CONFIG.quoteWebhook || CONFIG.leadWebhook;
+    if (hook) {
       // Form-encoded so it works across sites without CORS setup; HighLevel and Zapier both read these fields
-      await fetch(CONFIG.quoteWebhook, { method: "POST", mode: "no-cors", body: new URLSearchParams(lead) });
+      await fetch(hook, { method: "POST", mode: "no-cors", body: new URLSearchParams({ ...lead, event: "quote_request", ...visit() }) });
+      try { window.fbq && fbq("track", "Contact", { content_name: "Cabinet quote request" }); } catch (e) {}
     } else {
       console.warn("Cabinet visualizer: no quoteWebhook set, so this lead was not sent anywhere.", lead);
     }
@@ -2168,6 +2284,73 @@ $("quoteForm").addEventListener("submit", async ev => {
   } finally { btn.disabled = false; btn.textContent = "Send request"; }
 });
 
+/* ---------- the customer's details before the AI runs ---------- */
+// Facebook visitors pick their photo first (that's when they're invested), then give their details, then the AI
+// runs. So AI is only spent on people who became leads, and the details form is the step right before the payoff.
+// Asked once per device; coming back to a saved kitchen replays answers without asking again.
+// Only once there's somewhere to send the details (a lead nobody receives is worse than no form)
+const GATE = CONFIG.leadGate && !!CONFIG.leadWebhook && /^https:/.test(CONFIG.detectUrl);
+const savedLead = () => { try { return JSON.parse(localStorage.getItem("cv_lead") || "null"); } catch (e) { return null; } };
+// Where the visit came from (ad, campaign), so leads can be traced back to the ad that brought them
+const visit = (() => {
+  const q = new URLSearchParams(location.search), keepKeys = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "fbclid"];
+  let v = {};
+  try { v = JSON.parse(sessionStorage.getItem("cv_visit") || "{}"); } catch (e) {}
+  for (const k of keepKeys) if (q.get(k)) v[k] = q.get(k);
+  if (!v.landing_page) v.landing_page = location.href.split("#")[0];
+  if (!v.referrer && document.referrer) v.referrer = document.referrer;
+  try { sessionStorage.setItem("cv_visit", JSON.stringify(v)); } catch (e) {}
+  return () => v;
+})();
+var leadWaiting = []; // var: updateHint may look before this line has run
+function whenLead(run) {
+  if (!GATE || savedLead() || S.back) return run();
+  leadWaiting.push({ st: S, run });
+  askLead();
+}
+function askLead() {
+  const box = $("leadThumbs"); box.textContent = "";
+  for (const w of leadWaiting) { const im = document.createElement("img"); im.src = w.st.thumb; im.alt = ""; box.append(im); }
+  if (!$("leadDlg").open) $("leadDlg").showModal();
+  updateHint();
+}
+$("leadForm").addEventListener("submit", ev => {
+  if (ev.submitter && ev.submitter.value !== "send") return; // "Not now": the photo stays, the hint offers the form again
+  ev.preventDefault();
+  const fd = new FormData($("leadForm"));
+  const lead = {
+    first_name: fd.get("first").trim(), last_name: fd.get("last").trim(), phone: fd.get("phone").trim(),
+    email: fd.get("email").trim(), postal_code: fd.get("postal").trim().toUpperCase(), timing: fd.get("timing")
+  };
+  sendLead(lead);
+  $("leadDlg").close();
+  // Now find the cabinets in every photo that was waiting
+  for (const w of leadWaiting.splice(0)) withState(w.st, w.run);
+  updateHint();
+});
+function sendLead(lead) {
+  try { localStorage.setItem("cv_lead", JSON.stringify(lead)); } catch (e) {}
+  const eventID = "lead-" + newId();
+  try { window.fbq && fbq("track", "Lead", { content_name: "Cabinet visualizer" }, { eventID }); } catch (e) {}
+  try { parent !== window && parent.postMessage({ type: "cabinet-visualizer:visitor", lead }, "*"); } catch (e) {}
+  if (!CONFIG.leadWebhook) { console.warn("Cabinet visualizer: no leadWebhook set, so this lead was not sent anywhere.", lead); return; }
+  const body = new URLSearchParams({
+    ...lead, full_name: [lead.first_name, lead.last_name].filter(Boolean).join(" "),
+    event: "visualizer_started", source: "Cabinet colour visualizer", event_id: eventID, ...visit()
+  });
+  // keepalive: still sent if they close the tab right away
+  fetch(CONFIG.leadWebhook, { method: "POST", mode: "no-cors", body, keepalive: true }).catch(e => console.warn("Lead not sent:", e));
+}
+
+/* ---------- landing page ---------- */
+// Visited directly (e.g. from a Facebook ad), the page also shows examples, how we work and questions. Inside
+// another site's iframe (the partner's landing page) those sections stay hidden; that page has its own.
+if (parent !== window) document.querySelectorAll(".landing").forEach(el => el.hidden = true);
+$("ctaUpload").onclick = () => {
+  if (photos.length) { stage.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+  fileInput.click();
+};
+
 /* ---------- embedding: tell the parent page our height ---------- */
 if (parent !== window && "ResizeObserver" in window) {
   // Measure the content, not the document (which is never shorter than the iframe itself)
@@ -2177,7 +2360,7 @@ if (parent !== window && "ResizeObserver" in window) {
 }
 
 if (AUTO) {
-  $("intro").textContent = "Upload a photo of your kitchen and see your cabinets in any Sherwin-Williams colour in seconds.";
+  if (parent !== window) $("intro").textContent = "Upload a photo of your kitchen and see your cabinets in any Sherwin-Williams colour in seconds.";
   $("tip2").lastChild.textContent = "We find your cabinets and paint them automatically.";
   $("fixTools").hidden = true; $("aiNote").hidden = false;
 }
