@@ -2272,7 +2272,10 @@ $("quoteForm").addEventListener("submit", async ev => {
     const hook = CONFIG.quoteWebhook || CONFIG.leadWebhook;
     if (hook) {
       // Form-encoded so it works across sites without CORS setup; HighLevel and Zapier both read these fields
-      await fetch(hook, { method: "POST", mode: "no-cors", body: new URLSearchParams({ ...lead, event: "quote_request", ...visit() }) });
+      // Same field names as the details form so the CRM updates the same contact; the photo is too big for a webhook
+      const me = savedLead() || {}, parts = String(lead.name || "").trim().split(/\s+/);
+      const names = { first_name: parts[0] || me.first_name || "", last_name: parts.slice(1).join(" ") || me.last_name || "", full_name: lead.name || "", postal_code: me.postal_code || "" };
+      await fetch(hook, { method: "POST", mode: "no-cors", body: new URLSearchParams({ ...lead, ...names, photo: "", event: "quote_request", ...visit() }) });
       try { window.fbq && fbq("track", "Contact", { content_name: "Cabinet quote request" }); } catch (e) {}
     } else {
       console.warn("Cabinet visualizer: no quoteWebhook set, so this lead was not sent anywhere.", lead);
