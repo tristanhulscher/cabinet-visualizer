@@ -795,9 +795,9 @@ function getSession(stale) {
   }
   return sessionWait;
 }
-async function callAI(body) {
-  // Asked before (this customer coming back): the kept answer, no AI call
-  const key = answerKey(body), hit = key && await keep.get(key);
+async function callAI(body, fresh) {
+  // Asked before (this customer coming back): the kept answer, no AI call. `fresh`: asking again on purpose
+  const key = answerKey(body), hit = key && !fresh && await keep.get(key);
   if (hit) return hit;
   const data = await askAI(body);
   if (key) keep.put(key, data);
@@ -818,13 +818,15 @@ async function askAI(body) {
   }
 }
 const paintBody = (st, c) => ({ image: st.pad.image, aspect: st.pad.aspect, photo: st.pad.id, mode: "paint", color: { num: c.num, name: c.name, hex: c.hex.slice(1) } });
-const fetchPaint = (st, c) => callAI(paintBody(st, c)).then(d => st.pad.unpad(d.image));
+const fetchPaint = (st, c, fresh) => callAI(paintBody(st, c), fresh).then(d => st.pad.unpad(d.image));
 
 /* ---------- AI cabinet detection ---------- */
 // The detection service sends the photo back with only the cabinets repainted magenta, so every
 // magenta pixel is cabinet. The photo is padded out to a shape the AI draws natively and trimmed
 // back afterwards, so its answer lines up with the photo pixel for pixel.
 const ASPECTS = [[1, 1], [2, 3], [3, 2], [3, 4], [4, 3], [4, 5], [5, 4], [9, 16], [16, 9], [21, 9]];
+const INVENT_MAX = 0.05; // a render that invented doors over more of the cabinets than this is asked for again
+                         // (light colours: good renders measured 0-2.4%, invented glass doors 8-11%)
 const ALIGN_MIN = 0.65; // edge alignment: good renders measured 0.78-0.88, 8px shift ~0.53, 5% zoom ~0.35
 const DRIFT_LIMIT = 12; // avg change outside the cabinets: a correct answer measured ~4, a 15px shift ~16
 
@@ -909,7 +911,13 @@ function applyMagenta(ed, coat) {
     // around it); if the grey coat left that neutral dark spot as it was, it isn't cabinet (dark wood is tinted,
     // and the coat sometimes leaves a shadowed wooden side alone)
     const kept = coat && hi < 90 && S.Lb[i] < 30 && Math.hypot(S.Ab[i], S.Bb[i]) < 6 && (Math.abs(coat[p] - orig[p]) + Math.abs(coat[p + 1] - orig[p + 1]) + Math.abs(coat[p + 2] - orig[p + 2])) / 3 < 16;
-    if (magenta && !kept && towardB > Math.max(14, 0.3 * hi) && (hi < 120 || sat > 0.33 || towardB > 90)) { mask[i] = 1; found++; }
+    // In deep shadow the AI's magenta comes out dull, nearly brown (140, 80, 106): that counts too where the grey
+    // coat also repainted the spot in neutral grey, the two passes agreeing it's cabinet (left out, the shadowed
+    // half of a row of uppers stayed old wood)
+    const cg = coat && Math.max(coat[p], coat[p + 1], coat[p + 2]) - Math.min(coat[p], coat[p + 1], coat[p + 2]) < 22 &&
+      (Math.abs(coat[p] - orig[p]) + Math.abs(coat[p + 1] - orig[p + 1]) + Math.abs(coat[p + 2] - orig[p + 2])) / 3 > 12;
+    const dull = cg && r > g * 1.15 + 4 && b > g * 1.1 + 4 && Math.abs(r - b) < hi * 0.5 && towardB > 12;
+    if ((magenta && !kept && towardB > Math.max(14, 0.3 * hi) && (hi < 120 || sat > 0.33 || towardB > 90)) || dull) { mask[i] = 1; found++; }
     else if (i % 7 === 0) { drift += Math.abs(r + g + b - orig[p] - orig[p + 1] - orig[p + 2]) / 3; samples++; }
   }
   drift = samples ? drift / samples : 0;
@@ -1174,21 +1182,25 @@ async function paintFor(st, c) {
   try {
     // A colour render must line up with the photo too: if the AI shifted or redrew the room, the paint
     // would land beside the real cabinets. Check outside the cabinets, retry once, else keep the preview.
-    let px = null;
-    for (let attempt = 0; attempt < 2 && !px; attempt++) {
+    // A render that invented doors (glass panes on a solid door) is asked for once more too, and the one that
+    // invented less is kept: a second try usually comes back right
+    let best = null;
+    for (let attempt = 0; attempt < 2 && !(best && best.invented <= INVENT_MAX); attempt++) {
       // The first try may already be on its way (started with the find)
       const early = attempt === 0 && st.early && st.early[c.num];
       if (early) delete st.early[c.num];
       let cand;
-      try { cand = await (early || fetchPaint(st, c)); }
+      try { cand = await (early || fetchPaint(st, c, attempt > 0)); }
       catch (e) { if (early) continue; throw e; }
       if (!photos.includes(st)) return;
       const align = renderAlign(st, cand);
-      console.info(`Colour render ${c.num}: edge alignment ${align.toFixed(2)}`);
-      if (align >= ALIGN_MIN) px = cand;
+      if (align < ALIGN_MIN) { console.info(`Colour render ${c.num}: edge alignment ${align.toFixed(2)}, asking again`); continue; }
+      const out = withState(st, () => correctRender(cand, c));
+      console.info(`Colour render ${c.num}: edge alignment ${align.toFixed(2)}, invented ${(100 * out.invented).toFixed(1)}%`);
+      if (!best || out.invented < best.invented) best = out;
     }
-    if (!px) throw new Error("colour render didn't line up with the photo");
-    st.renders[c.num] = withState(st, () => correctRender(px, c));
+    if (!best) throw new Error("colour render didn't line up with the photo");
+    st.renders[c.num] = best;
     if (G.pending.has(c.num)) { G.pending.delete(c.num); G.saved.push(c); }
     if (S === st && coloursHere().includes(c)) render();
   } catch (e) {
@@ -1436,13 +1448,15 @@ function correctRender(px, c) {
     coat = boxBlur(coat, w, h, 3);
   }
   // The AI sometimes invents a door: glass panes with dishes, or open shelves, on what is a solid door. The grey
-  // coat (asked for separately) keeps the real door, and a solid door is plain there. Where the render is
-  // far busier than the coat across about a door panel, we paint the spot ourselves from the coat's shading
+  // coat (asked for separately) keeps the real door, and a solid door is plain there. Where the render is far
+  // busier than the coat and the photo across about a door panel, it invented one. Patching that spot always
+  // showed as a blank blob, worse than the AI's own tidy door, so it's only measured: paintFor asks again instead
   const made = new Uint8Array(n);
+  let invented = 0, inventedPx = 0, cntMk = 0;
   {
     const R = Math.max(6, Math.round(Math.max(w, h) / 50)), mk = new Float32Array(n), cL = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      mk[i] = aiBase[i] && !(S.inner && S.inner[i]) && !(S.hw && S.hw[i]) ? 1 : 0;
+      mk[i] = aiBase[i] && !(S.inner && S.inner[i]) && !(S.hw && S.hw[i]) ? 1 : 0; cntMk += mk[i];
       cL[i] = S.aiY[i] > 0.008856 ? 116 * Math.cbrt(S.aiY[i]) - 16 : 903.3 * S.aiY[i];
     }
     const sd = x => {
@@ -1467,21 +1481,11 @@ function correctRender(px, c) {
     const deep = boxBlur(mk, w, h, Math.round(R / 2));
     for (let i = 0; i < n; i++) busy[i] = deep[i] > 0.999 && sR[i] > 2 * Math.max(sC[i] * scale, sP[i] * pScale) + 3 ? 1 : 0;
     const area = boxBlur(boxBlur(busy, w, h, Math.round(R / 2)).map(v => v > 0.15 ? 1 : 0), w, h, Math.round(R / 3));
-    // There the coat stands in for the render: its door, at the render's brightness and average tint, then
-    // corrected like the rest of the paint
-    // (brightness: the render's own paint nearby, outside the busy spot, so the patch doesn't show as a band)
-    for (let i = 0; i < n; i++) if (mk[i] && area[i] > 0.001) made[i] = 1;
-    const ok = new Float32Array(n), okL = new Float32Array(n), okC = new Float32Array(n);
-    for (let i = 0; i < n; i++) if (mk[i] && !made[i]) { ok[i] = 1; okL[i] = L[i]; okC[i] = cL[i]; }
-    const nb = boxBlur(ok, w, h, 3 * R), nL = boxBlur(okL, w, h, 3 * R), nC = boxBlur(okC, w, h, 3 * R);
-    for (let i = 0; i < n; i++) if (made[i]) {
-      L[i] = nb[i] > 0.05 ? nL[i] / nb[i] + (cL[i] - nC[i] / nb[i]) * scale : cL[i] * scale;
-      A[i] = mA; B[i] = mB;
-    }
+    for (let i = 0; i < n; i++) if (mk[i] && area[i] > 0.001) { made[i] = 1; inventedPx++; }
+    invented = cntMk ? inventedPx / cntMk : 0;
   }
   for (let i = 0; i < n; i++) {
     if (!aiOK[i]) continue;
-    if (made[i]) { changed[i] = 1; continue; }
     // Also painted: a spot whose colour moved clearly toward the chip, even if it's no lighter or darker
     const tA = t[1] - Ab[i], tB = t[2] - Bb[i], tl = Math.hypot(tA, tB);
     const toward = tl > 10 && ((A[i] - Ab[i]) * tA + (B[i] - Bb[i]) * tB) / tl > Math.max(5, 0.35 * tl);
@@ -1600,7 +1604,11 @@ function correctRender(px, c) {
     // (253 tells draw() to paint over hardware the photo suggested here)
     out[p] = rgb[0]; out[p + 1] = rgb[1]; out[p + 2] = rgb[2];
     out[p + 3] = plain[i] && changed[i] && a === 255 ? 253 : own[i] || changed[i] ? a : Math.min(254, a);
-  }  return out;
+  }
+  // Share of the cabinets where the render invented a door (see paintFor). Only judged on light colours: navy over
+  // plain white cabinets is busier than the photo and the grey coat everywhere, which read as 20-30% invented
+  out.invented = light > 0 ? invented : 0;
+  return out;
 }
 
 // Hardware: knobs and pulls are small, compact spots inside a door or drawer whose colour clearly
@@ -2036,7 +2044,7 @@ function draw(look) {
       if (ak <= 0) return;
       r = P.real[p]; g = P.real[p + 1]; b = P.real[p + 2]; al = ak;
     } else {
-      if (P.known && aiOK[i]) { if ((hw && hw[i] === 1) || P.known[p + 3] < 255) return; }
+      if (P.known && aiOK[i]) { const ka = P.known[p + 3]; if ((hw && hw[i] === 1) || (ka < 253 || ka === 254)) return; }
       else if (S.inner && S.inner[i]) return; // glass panes and cubbies: only a photo-real render paints inside
       // Final-coat look: an even, solid colour. Only the room's broad lighting and a softened hint of the
       // door profiles carry over; the old finish's grain and blotches don't.
