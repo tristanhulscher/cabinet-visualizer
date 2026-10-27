@@ -135,6 +135,12 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   }
   .bot-check.ask::before { content: "One quick check before we paint"; display: block; font-weight: 700; font-size: 17px; margin-bottom: 4px; }
   .bot-check.ask::after { content: "Tap the box to show you're not a robot."; display: block; font-size: 14px; color: #555; margin-top: 8px; }
+  .fams { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+  .fams button {
+    font: inherit; font-size: 13px; padding: 6px 11px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: #fff; color: var(--ink);
+  }
+  .fams button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
   .only-note {
     display: inline-block; margin: 0 0 8px; padding: 8px 12px; border-radius: 2px; font-size: 15px;
     background: #fff; border: 1px solid var(--line); border-left: 3px solid var(--accent); color: var(--ink);
@@ -386,6 +392,9 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
         <div><small id="curLabel">Your colour</small><strong id="curName"></strong><span id="curNum" style="color:var(--muted);font-size:13px"></span></div>
       </div>
       <div id="popular"></div>
+      <h3>Browse by colour family</h3>
+      <div class="fams" id="fams" role="tablist" aria-label="Colour families"></div>
+      <div class="swatches" id="famSwatches" role="tabpanel"></div>
       <h3>Find any Sherwin-Williams colour</h3>
       <input class="search" id="search" type="search" placeholder="Name or number, e.g. Naval or 6244" autocomplete="off">
       <div class="swatches" id="results" style="margin-top:10px"></div>
@@ -509,7 +518,7 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   </form>
 </dialog>
 
-<script src="colors.js?v=3"></script>
+<script src="colors.js?v=4"></script>
 <script>
 /* ===================== Settings: edit these ===================== */
 const CONFIG = {
@@ -2220,6 +2229,21 @@ function buildPopular() {
     box.append(h, g);
   }
 }
+// Colour families (colors.js): a tab per family, its colours from light to dark
+function buildFamilies() {
+  const tabs = $("fams"), box = $("famSwatches"), L = c => rgbToLab(...hexRgb(c.hex))[0];
+  const show = k => {
+    tabs.querySelectorAll("button").forEach((b, j) => b.setAttribute("aria-selected", j === k));
+    box.textContent = "";
+    window.SW_FAMILIES[k][1].map(n => BY_NUM[n]).filter(Boolean).sort((a, b) => L(b) - L(a)).forEach(c => box.append(swatch(c)));
+  };
+  window.SW_FAMILIES.forEach(([name], k) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.setAttribute("role", "tab"); b.textContent = name; b.onclick = () => show(k);
+    tabs.append(b);
+  });
+  show(0);
+}
 function pickColor(c) {
   S.color = c;
   // Two-tone: the colour goes on the part picked (on every part until the parts are known)
@@ -2464,6 +2488,7 @@ if (pixelNoise.worst > 3 || pixelNoise.off > 0.05) {
 if (BOT_CHECK) getSession().catch(e => console.warn("Bot check:", e)); // ready before the photo is
 
 buildPopular();
+if (window.SW_FAMILIES) buildFamilies();
 updateHint();
 // Coming back within 30 days: offer the kitchen they worked on
 keep.get("session").then(s => {
