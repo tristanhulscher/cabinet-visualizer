@@ -10,8 +10,8 @@
 <meta property="og:image" content="https://colours.envisionpainting.ca/img/kitchen-white.jpg">
 <!-- Meta pixel (Envision Painting's Pixel). PageView on load; Lead when someone gives their details (see sendLead) -->
 <script>
-// Only on the real site: local test runs mustn't count as page views or leads
-if (/(^|\.)envisionpainting\.ca$|\.github\.io$/.test(location.hostname))
+// Only on the real site: local test runs and team devices (see TEAM_HASH) mustn't count as page views or leads
+if (/(^|\.)envisionpainting\.ca$|\.github\.io$/.test(location.hostname) && !(() => { try { return localStorage.getItem("cv_team"); } catch (e) {} })())
 !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};
 if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
 t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
@@ -60,6 +60,8 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   .site-head .in { max-width: 1200px; margin: 0 auto; padding: 10px 16px; display: flex; align-items: center; gap: 12px; }
   .site-head img { height: 40px; width: auto; display: block; }
   .site-head .spacer { flex: 1; }
+  .team-tag { font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .team-tag button { font: inherit; font-weight: 500; color: #666; background: none; border: 0; padding: 0 0 0 6px; text-decoration: underline; cursor: pointer; }
   .trust { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 4px 0 16px; font-size: 14px; color: var(--muted); }
   .trust b { color: var(--ink); }
   .trust .stars { color: #f5a623; letter-spacing: 1px; }
@@ -304,6 +306,7 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   <div class="in">
     <a href="https://envisionpainting.ca/" aria-label="Envision Painting home"><img src="img/envision-logo.png" alt="Envision Painting Ltd" width="259" height="80"></a>
     <span class="spacer"></span>
+    <span class="team-tag" id="teamTag" hidden>Team device <button type="button" id="teamOff">Turn off</button></span>
     <a class="btn primary" href="tel:+12508132530">Call (250) 813-2530</a>
   </div>
 </header>
@@ -2368,6 +2371,7 @@ $("quoteForm").addEventListener("submit", async ev => {
     name: fd.get("name"), phone: tidyPhone(fd.get("phone")) || fd.get("phone"), email: fd.get("email"), city: fd.get("city"), notes: fd.get("notes"),
     color: lookLabel(), color_hex: lookLines().map(l => l.c.hex).join(", "), source: "Cabinet colour visualizer", page: document.referrer || location.href
   };
+  if (isTeam()) lead.team = "true"; // sent by our own staff with a customer, not from an ad
   if (fd.get("attach")) {
     const c = finalCanvas(), small = document.createElement("canvas"), k = Math.min(1, 900 / Math.max(c.width, c.height));
     small.width = Math.round(c.width * k); small.height = Math.round(c.height * k);
@@ -2385,12 +2389,13 @@ $("quoteForm").addEventListener("submit", async ev => {
       const me = savedLead() || {}, parts = String(lead.name || "").trim().split(/\s+/);
       const names = { first_name: parts[0] || me.first_name || "", last_name: parts.slice(1).join(" ") || me.last_name || "", full_name: lead.name || "", postal_code: me.postal_code || "" };
       await fetch(hook, { method: "POST", mode: "no-cors", body: new URLSearchParams({ ...lead, ...names, photo: "", event: "quote_request", ...visit() }) });
-      try { window.fbq && fbq("track", "Contact", { content_name: "Cabinet quote request" }); } catch (e) {}
+      if (!isTeam()) try { window.fbq && fbq("track", "Contact", { content_name: "Cabinet quote request" }); } catch (e) {}
     } else {
       console.warn("Cabinet visualizer: no quoteWebhook set, so this lead was not sent anywhere.", lead);
     }
     $("quoteFields").hidden = true; $("quoteDone").hidden = false;
-    try { typeof gtag === "function" && gtag("event", "generate_lead", { method: "cabinet_visualizer" }); } catch (e) {}
+    if (isTeam()) $("quoteForm").reset(); // the next customer on this device starts with an empty form
+    if (!isTeam()) try { typeof gtag === "function" && gtag("event", "generate_lead", { method: "cabinet_visualizer" }); } catch (e) {}
   } catch (e) {
     alert("Sorry, that didn't send. Please check your connection and try again.");
   } finally { btn.disabled = false; btn.textContent = "Send request"; }
@@ -2416,9 +2421,32 @@ const visit = (() => {
   try { sessionStorage.setItem("cv_visit", JSON.stringify(v)); } catch (e) {}
   return () => v;
 })();
+// Team devices (Sean, Craig, estimators showing customers): opened once with the private team link
+// https://colours.envisionpainting.ca/?team=<code>, the device skips the details form and sends no lead, so team
+// use doesn't fill Sean's pipeline with fake leads. Quote requests still go out, marked team=true. The page only
+// holds a hash of the code; ?team=off turns it off again. Turning it on forgets saved details, so quote forms
+// start empty for each customer.
+const TEAM_HASH = "061a4a74c190a78c3ec5aee57ba33c82da7e7a946db6e9f43562519ed562af5d"; // sha256("cv-team:" + code)
+const isTeam = () => { try { return localStorage.getItem("cv_team") === "1"; } catch (e) { return false; } };
+function showTeam() { $("teamTag").hidden = !isTeam(); }
+$("teamOff").onclick = () => { try { localStorage.removeItem("cv_team"); } catch (e) {} showTeam(); };
+(async () => {
+  const q = new URLSearchParams(location.search), code = q.get("team");
+  if (code === null) return showTeam();
+  if (code === "off") { try { localStorage.removeItem("cv_team"); } catch (e) {} }
+  else if (crypto.subtle) {
+    const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("cv-team:" + code.trim().toLowerCase()));
+    if ([...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("") === TEAM_HASH) {
+      try { localStorage.setItem("cv_team", "1"); localStorage.removeItem("cv_lead"); } catch (e) {}
+    }
+  }
+  // Keep the code out of the address bar, so a screenshot or shared link doesn't pass it on
+  q.delete("team"); history.replaceState(null, "", location.pathname + (q.toString() ? "?" + q : "") + location.hash);
+  showTeam();
+})();
 var leadWaiting = []; // var: updateHint may look before this line has run
 function whenLead(run) {
-  if (!GATE || savedLead() || S.back) return run();
+  if (!GATE || isTeam() || savedLead() || S.back) return run();
   leadWaiting.push({ st: S, run });
   askLead();
 }
@@ -2457,6 +2485,7 @@ $("leadForm").addEventListener("submit", ev => {
   updateHint();
 });
 function sendLead(lead) {
+  if (isTeam()) return; // never a lead from a team device
   try { localStorage.setItem("cv_lead", JSON.stringify(lead)); } catch (e) {}
   const eventID = "lead-" + newId();
   try { window.fbq && fbq("track", "Lead", { content_name: "Cabinet visualizer" }, { eventID }); } catch (e) {}
