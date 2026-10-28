@@ -822,7 +822,7 @@ async function askAI(body) {
     used = await getSession(attempt ? used : null);
     const res = await fetch(CONFIG.detectUrl, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(used ? { ...body, session: used } : body)
+      body: JSON.stringify({ ...body, ...(used && { session: used }), ...(isTeam() && { team: teamCode() }) })
     });
     const data = await res.json();
     if (data.needCheck && BOT_CHECK && attempt === 0) continue; // session expired: check again once
@@ -1168,7 +1168,7 @@ function snapEdges(core, r = Math.max(4, Math.round(Math.max(S.w, S.h) / 220)), 
 // For each colour the customer picks, the AI paints the cabinets in that real Sherwin-Williams colour.
 // We keep only the cabinets from its picture and correct them to the exact chip; the instant preview
 // shows until it arrives. Renders are cached per colour and capped per photo to keep costs known.
-const MAX_RENDERS = 5;      // photo-real colours per customer (across all their photos, per day)
+let MAX_RENDERS = 5;        // photo-real colours per customer (across all their photos, per day); 20 on team devices (see TEAM_HASH)
 const DWELL_MS = 1500;      // wait this long on a colour before rendering it, so flicking through is free
 let dwellTimer = 0;
 
@@ -2423,12 +2423,14 @@ const visit = (() => {
 })();
 // Team devices (Sean, Craig, estimators showing customers): opened once with the private team link
 // https://colours.envisionpainting.ca/?team=<code>, the device skips the details form and sends no lead, so team
-// use doesn't fill Sean's pipeline with fake leads. Quote requests still go out, marked team=true. The page only
-// holds a hash of the code; ?team=off turns it off again. Turning it on forgets saved details, so quote forms
-// start empty for each customer.
+// use doesn't fill Sean's pipeline with fake leads. Quote requests still go out, marked team=true. Team devices get
+// 20 photo-real colours a day, and the code goes with each AI request so the Worker lifts its per-connection
+// limits (an office shares one). The page only holds a hash of the code; ?team=off turns it off again. Turning it
+// on forgets saved details, so quote forms start empty for each customer.
 const TEAM_HASH = "061a4a74c190a78c3ec5aee57ba33c82da7e7a946db6e9f43562519ed562af5d"; // sha256("cv-team:" + code)
-const isTeam = () => { try { return localStorage.getItem("cv_team") === "1"; } catch (e) { return false; } };
-function showTeam() { $("teamTag").hidden = !isTeam(); }
+const teamCode = () => { try { return localStorage.getItem("cv_team") || ""; } catch (e) { return ""; } };
+const isTeam = () => !!teamCode();
+function showTeam() { $("teamTag").hidden = !isTeam(); MAX_RENDERS = isTeam() ? 20 : 5; }
 $("teamOff").onclick = () => { try { localStorage.removeItem("cv_team"); } catch (e) {} showTeam(); };
 (async () => {
   const q = new URLSearchParams(location.search), code = q.get("team");
@@ -2437,7 +2439,7 @@ $("teamOff").onclick = () => { try { localStorage.removeItem("cv_team"); } catch
   else if (crypto.subtle) {
     const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("cv-team:" + code.trim().toLowerCase()));
     if ([...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("") === TEAM_HASH) {
-      try { localStorage.setItem("cv_team", "1"); localStorage.removeItem("cv_lead"); } catch (e) {}
+      try { localStorage.setItem("cv_team", code.trim().toLowerCase()); localStorage.removeItem("cv_lead"); } catch (e) {}
     }
   }
   // Keep the code out of the address bar, so a screenshot or shared link doesn't pass it on
