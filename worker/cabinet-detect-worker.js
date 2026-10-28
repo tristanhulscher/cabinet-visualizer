@@ -34,6 +34,10 @@ const FIND_LIMIT = 10;                  // photo uploads per visitor per hour
 const PAINT_LIMIT = 18;                 // colour renders per visitor per day (page allows 5 colours x up to 3 angles, plus retries)
 const PARTS_LIMIT = 10;                 // two-tone part finds per visitor per hour (one per photo, plus retries)
 const HELLO_LIMIT = 30;                 // bot checks per visitor per hour
+// Team devices (opened with the page's private ?team= link) send the code; they skip the per-IP limits, since an
+// office shares one connection, and get bigger per-session backstops (page allows them 20 colours x up to 3 angles)
+const TEAM_HASH = "061a4a74c190a78c3ec5aee57ba33c82da7e7a946db6e9f43562519ed562af5d"; // sha256("cv-team:" + code), same as the page
+const TEAM_LIMITS = { find: 30, parts: 30, paint: 70 };
 const SESSION_MS = 3 * 60 * 60 * 1000;  // a passed bot check is good for 3 hours
 const KEEP_SECONDS = 90 * 24 * 60 * 60; // saved photos and answers delete themselves after 90 days
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
@@ -131,6 +135,12 @@ function rateLimited(key, limit, windowMs) {
   list.push(now);
   hits.set(key, list);
   return false;
+}
+
+async function isTeamCode(code) {
+  if (typeof code !== "string" || !code || code.length > 64) return false;
+  const h = await crypto.subtle.digest("SHA-256", enc.encode("cv-team:" + code));
+  return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("") === TEAM_HASH;
 }
 
 // Sessions are "<expiry>.<id>.<signature>", signed with the Turnstile secret, so no storage is needed
@@ -233,10 +243,12 @@ export default {
     const photo = /^[a-z0-9]{8,16}$/.test(body.photo || "") ? body.photo : "";
 
     const t0 = Date.now();
-    // Limits per visitor (IP) and, with the bot check on, per session too
+    // Limits per visitor (IP) and, with the bot check on, per session too; team devices only per session
     const mode = body.mode === "paint" || body.mode === "parts" ? body.mode : "find";
     const [kind, limit, span] = { find: ["f:", FIND_LIMIT, HOUR], parts: ["g:", PARTS_LIMIT, HOUR], paint: ["p:", PAINT_LIMIT, DAY] }[mode];
-    if (rateLimited(kind + ip, limit, span) || (sid && rateLimited(kind + "s:" + sid, limit, span))) {
+    const team = sid && await isTeamCode(body.team);
+    if (team ? rateLimited("t" + kind + sid, TEAM_LIMITS[mode], span)
+             : rateLimited(kind + ip, limit, span) || (sid && rateLimited(kind + "s:" + sid, limit, span))) {
       return reply({ error: "You've reached today's limit, please try again later" }, 429, origin);
     }
     if (mode === "parts") {
