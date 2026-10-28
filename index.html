@@ -473,7 +473,8 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
       <label class="field">Mobile phone<input name="phone" type="tel" required autocomplete="tel" inputmode="tel"></label>
       <label class="field">Postal code<input name="postal" required autocomplete="postal-code" placeholder="V8X 1A1"></label>
     </div>
-    <label class="field">Email (optional)<input name="email" type="email" autocomplete="email"></label>
+    <label class="field">Email<input name="email" type="email" required autocomplete="email"></label>
+    <label class="field">What would you like painted? (optional)<input name="project" autocomplete="off" placeholder="e.g. kitchen cabinets and island, bathroom vanity"></label>
     <label class="field">When are you hoping to paint?
       <select name="timing" required>
         <option value="">Choose one</option>
@@ -2345,7 +2346,7 @@ $("quoteForm").addEventListener("submit", async ev => {
   ev.preventDefault();
   const fd = new FormData($("quoteForm"));
   const lead = {
-    name: fd.get("name"), phone: fd.get("phone"), email: fd.get("email"), city: fd.get("city"), notes: fd.get("notes"),
+    name: fd.get("name"), phone: tidyPhone(fd.get("phone")) || fd.get("phone"), email: fd.get("email"), city: fd.get("city"), notes: fd.get("notes"),
     color: lookLabel(), color_hex: lookLines().map(l => l.c.hex).join(", "), source: "Cabinet colour visualizer", page: document.referrer || location.href
   };
   if (fd.get("attach")) {
@@ -2408,13 +2409,27 @@ function askLead() {
   if (!$("leadDlg").open) $("leadDlg").showModal();
   updateHint();
 }
+// A North American number: 10 digits (a leading 1 is fine), so a missed digit can't become a lead we can't reach
+function tidyPhone(v) {
+  let d = String(v || "").replace(/\D/g, "");
+  if (d.length === 11 && d[0] === "1") d = d.slice(1);
+  return d.length === 10 && /[2-9]/.test(d[0]) ? "+1" + d : "";
+}
+for (const input of document.querySelectorAll('input[name="phone"]')) {
+  const check = () => input.setCustomValidity(!input.value.trim() || tidyPhone(input.value) ? "" : "Please enter your full 10-digit phone number, e.g. 250-555-0123.");
+  input.addEventListener("input", check);
+  input.addEventListener("blur", check);
+  // The browser validates before "submit" fires, so also check when the send button is pressed (covers prefilled numbers)
+  input.form.querySelectorAll('button[value="send"]').forEach(b => b.addEventListener("click", check));
+}
 $("leadForm").addEventListener("submit", ev => {
   if (ev.submitter && ev.submitter.value !== "send") return; // "Not now": the photo stays, the hint offers the form again
   ev.preventDefault();
   const fd = new FormData($("leadForm"));
   const lead = {
-    first_name: fd.get("first").trim(), last_name: fd.get("last").trim(), phone: fd.get("phone").trim(),
-    email: fd.get("email").trim(), postal_code: fd.get("postal").trim().toUpperCase(), timing: fd.get("timing")
+    first_name: fd.get("first").trim(), last_name: fd.get("last").trim(), phone: tidyPhone(fd.get("phone")),
+    email: fd.get("email").trim(), postal_code: fd.get("postal").trim().toUpperCase(), timing: fd.get("timing"),
+    project: fd.get("project").trim()
   };
   sendLead(lead);
   $("leadDlg").close();
