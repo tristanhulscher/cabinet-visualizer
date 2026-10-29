@@ -27,17 +27,19 @@ const ALLOWED_ORIGINS = [
   "https://tristanhulscher.github.io",
   "http://localhost:8766",
   "http://localhost:8767",
+  "http://localhost:8768",
 ];
 const ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
 const MAX_IMAGE_CHARS = 4_000_000;      // ~3 MB JPEG; the page sends ~2048px photos (~600 KB)
 const FIND_LIMIT = 10;                  // photo uploads per visitor per hour
-const PAINT_LIMIT = 18;                 // colour renders per visitor per day (page allows 5 colours x up to 3 angles, plus retries)
+const PAINT_LIMIT = 55;                 // colour renders per visitor per day (page allows 15 colours x up to 3 angles, plus retries)
+const SHARE_LIMIT = 20;                 // before-and-after pictures kept per visitor per day (the page sends one per visit)
 const PARTS_LIMIT = 10;                 // two-tone part finds per visitor per hour (one per photo, plus retries)
 const HELLO_LIMIT = 30;                 // bot checks per visitor per hour
 // Team devices (opened with the page's private ?team= link) send the code; they skip the per-IP limits, since an
-// office shares one connection, and get bigger per-session backstops (page allows them 20 colours x up to 3 angles)
+// office shares one connection, and get bigger per-session backstops (page allows them 30 colours x up to 3 angles)
 const TEAM_HASH = "061a4a74c190a78c3ec5aee57ba33c82da7e7a946db6e9f43562519ed562af5d"; // sha256("cv-team:" + code), same as the page
-const TEAM_LIMITS = { find: 30, parts: 30, paint: 70 };
+const TEAM_LIMITS = { find: 30, parts: 30, paint: 110 };
 const SESSION_MS = 3 * 60 * 60 * 1000;  // a passed bot check is good for 3 hours
 const KEEP_SECONDS = 90 * 24 * 60 * 60; // saved photos and answers delete themselves after 90 days
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
@@ -210,6 +212,15 @@ function keep(env, ctx, photo, what, dataUrl, meta) {
 export default {
   async fetch(request, env, ctx) {
     const origin = request.headers.get("Origin") || "";
+    // A customer's before-and-after picture (kept by mode "share" below) at the private link texted to them
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname.startsWith("/p/")) {
+      const token = url.pathname.slice(3);
+      const data = /^[a-z0-9]{16}$/.test(token) && env.SAVES ? await env.SAVES.get("p/" + token) : null;
+      if (!data) return new Response("Not found", { status: 404 });
+      const bytes = Uint8Array.from(atob(data.slice(data.indexOf(",") + 1)), ch => ch.charCodeAt(0));
+      return new Response(bytes, { headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" } });
+    }
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(origin) });
     if (request.method !== "POST") return reply({ error: "POST a photo to use this endpoint" }, 405, origin);
     if (!ALLOWED_ORIGINS.includes(origin)) return reply({ error: "Not allowed from this site" }, 403, origin);
@@ -241,6 +252,15 @@ export default {
     const jpeg = image.slice(image.indexOf(",") + 1);
     // The page's random id for this photo (not the visitor), so a photo and its answers are kept together
     const photo = /^[a-z0-9]{8,16}$/.test(body.photo || "") ? body.photo : "";
+
+    // The page's before-and-after picture of this customer's kitchen: kept 90 days, served at /p/<token>
+    if (body.mode === "share") {
+      if (!env.SAVES) return reply({ error: "No storage" }, 500, origin);
+      if (rateLimited("sh:" + ip, SHARE_LIMIT, DAY)) return reply({ error: "Too many pictures today" }, 429, origin);
+      const token = [...crypto.getRandomValues(new Uint8Array(16))].map(b => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
+      await env.SAVES.put("p/" + token, image, { expirationTtl: KEEP_SECONDS, metadata: { photo } });
+      return reply({ url: `${url.origin}/p/${token}` }, 200, origin);
+    }
 
     const t0 = Date.now();
     // Limits per visitor (IP) and, with the bot check on, per session too; team devices only per session

@@ -17,6 +17,15 @@ if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createEl
 t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
 if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
 </script>
+<!-- PostHog (project "Envision Painting", shared with the Painter For A Day site): page views and the steps below,
+     so we can see where people stop. Only on the real site; team devices opt out (see showTeam) -->
+<script>
+if (/(^|\.)envisionpainting\.ca$|\.github\.io$/.test(location.hostname)) {
+  !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="init capture register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled getFeatureFlag onFeatureFlags identify setPersonProperties startSessionRecording stopSessionRecording".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+  posthog.init("phc_nKSqg6mJbnNHdbQ8C5fVhaYSGXjawEbQa2axcXqdbwsV", { api_host: "https://us.i.posthog.com", person_profiles: "identified_only" });
+  posthog.register({ page_variant: "cabinet_visualizer" });
+}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -251,6 +260,11 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .check { display: flex; gap: 8px; align-items: center; font-size: 13px; margin: 4px 0 14px; }
   .dlg-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  /* Someone who already gave their details sends a quote request in one tap: their details as a line, Edit to change */
+  .q-summary { display: none; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); font-size: 14px; }
+  .q-summary .btn { padding: 6px 10px; font-size: 13px; }
+  #quoteForm.quick .who { display: none; }
+  #quoteForm.quick .q-summary { display: flex; }
   .done { text-align: center; padding: 10px 0; }
 
   /* Landing page sections (only when the page is visited directly, not inside another site's iframe) */
@@ -501,12 +515,13 @@ if (window.fbq) { fbq('init', '1367288206620737'); fbq('track', 'PageView'); }
       <h2>Get your free cabinet quote</h2>
       <p>We'll get back to you within one business day.</p>
       <div class="picked" id="qPicked"></div>
-      <div class="row2">
+      <div class="q-summary" id="qSummary"><span id="qWho"></span><button class="btn" type="button" id="qEdit">Edit</button></div>
+      <div class="row2 who">
         <label class="field">Name<input name="name" required autocomplete="name"></label>
         <label class="field">Phone<input name="phone" type="tel" required autocomplete="tel"></label>
       </div>
-      <label class="field">Email<input name="email" type="email" required autocomplete="email"></label>
-      <label class="field">City / area<input name="city" autocomplete="address-level2"></label>
+      <label class="field who">Email<input name="email" type="email" required autocomplete="email"></label>
+      <label class="field who">City / area<input name="city" autocomplete="address-level2"></label>
       <label class="field">Anything we should know? (optional)<textarea name="notes" placeholder="e.g. number of doors, island too, timing"></textarea></label>
       <label class="check"><input type="checkbox" name="attach" checked> Include my preview photo</label>
       <div class="dlg-actions">
@@ -624,6 +639,9 @@ let outImg = null;
 const MAX_PHOTOS = 3;
 const photos = [];                                 // one state object per angle
 const G = { saved: [], pending: new Set(), count: 0 }; // colours chosen for photo-real, shared by all angles
+// A step on the way to a quote (PostHog): photo_uploaded, details_given, colour_tried, render_done, limit_hit,
+// two_tone_on, compare_used, download, quote_opened, quote_sent, picture_shared. Nothing from staff devices
+function track(name, props) { try { if (window.posthog && !isTeam()) posthog.capture(name, props || {}); } catch (e) {} }
 const UI_KEYS = ["color", "tool", "comparing", "split", "showSel", "two", "look", "part"];
 // Run fn with S temporarily set to another photo (for answers that arrive for a photo not on screen)
 function withState(st, fn) { const prev = S; S = st; try { return fn(); } finally { S = prev; } }
@@ -727,6 +745,7 @@ function setup(img) {
   tc.width = Math.round(w * tk); tc.height = Math.round(h * tk); tc.getContext("2d").drawImage(before, 0, 0, tc.width, tc.height);
   S.thumb = tc.toDataURL("image/jpeg", 0.8);
   $("start").hidden = true; $("editor").hidden = false; updatePhotos();
+  track("photo_uploaded", { angles: photos.length });
   if (!S.color) pickColor(BY_NUM[CONFIG.defaultColor] || COLORS[0]);
   setCompare(false); setTool("wand"); updateUndo(); maskChanged();
   stage.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -840,6 +859,8 @@ const fetchPaint = (st, c, fresh) => callAI(paintBody(st, c), fresh).then(d => s
 const ASPECTS = [[1, 1], [2, 3], [3, 2], [3, 4], [4, 3], [4, 5], [5, 4], [9, 16], [16, 9], [21, 9]];
 const INVENT_MAX = 0.05; // a render that invented doors over more of the cabinets than this is asked for again
                          // (light colours: good renders measured 0-2.4%, invented glass doors 8-11%)
+const BLOB_MAX = 0.02;   // ...or one single invented patch bigger than this: an open shelf with bottles drawn on
+                         // one solid door is a few percent, under INVENT_MAX, but a good render's specks are scattered
 const ALIGN_MIN = 0.65; // edge alignment: good renders measured 0.78-0.88, 8px shift ~0.53, 5% zoom ~0.35
 const DRIFT_LIMIT = 12; // avg change outside the cabinets: a correct answer measured ~4, a 15px shift ~16
 
@@ -912,7 +933,7 @@ async function autoDetect() {
 
 function applyMagenta(ed, coat) {
   const { w, h, orig } = S, n = w * h, mask = new Uint8Array(n);
-  let drift = 0, samples = 0, found = 0, faint = null;
+  let drift = 0, samples = 0, found = 0, faint = null, pale = null;
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     const r = ed[p], g = ed[p + 1], b = ed[p + 2], hi = Math.max(r, b);
     const magenta = r > g * 1.3 + 8 && b > g * 1.3 + 8 && hi > 30 && Math.abs(r - b) < hi * 0.5;
@@ -940,16 +961,24 @@ function applyMagenta(ed, coat) {
       // magenta in red and blue
       const towardR = (r - g) - (orig[p] - orig[p + 1]);
       if (!kept && hi < 110 && Math.hypot(S.Ab[i], S.Bb[i]) < 8 && r > g * 1.15 + 3 && b > g * 1.08 + 3 && Math.abs(r - b) < hi * 0.5 && towardR > 10 && towardB > 5) (faint ||= new Uint8Array(n))[i] = 1;
+      // A window or light reflected in a glossy dark door: the AI's magenta there is bright pink, about
+      // (238, 185, 203), which the test above reads as a reflection in glass. The grey coat is no help (grey paint
+      // reflecting a light is still light), so the tell is a strong pink shift on a bright, nearly colourless spot
+      // of the photo (a highlight, not a coloured object; a tile's faint pink bleed is far weaker). Left out, the
+      // reflection was a hole in the outline and showed as a grey blotch of photo on every colour
+      else if (!kept && hi >= 120 && S.Lb[i] > 50 && Math.hypot(S.Ab[i], S.Bb[i]) < 14 && r - g > Math.max(45, 0.2 * hi) && b - g > 15 && Math.abs(r - b) < hi * 0.5 && towardR > 40 && towardB > 20) (pale ||= new Uint8Array(n))[i] = 1;
     }
   }
-  // Grow the cabinets into the faint magenta pixels touching them
-  if (faint) {
-    const stack = new Int32Array(n); let sp = 0;
+  // Grow the cabinets into the faint and pale magenta pixels touching them. A reflection only counts on a
+  // finish much darker than it (on white cabinets a reflection is white on white and needs no help; adding it
+  // there speckled the doors)
+  if (faint || pale) {
+    const finL = pale ? finish(mask).L : 0, stack = new Int32Array(n); let sp = 0;
     for (let i = 0; i < n; i++) if (mask[i]) stack[sp++] = i;
     while (sp) {
       const i = stack[--sp], x = i % w;
       for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w])
-        if (j >= 0 && j < n && faint[j] && !mask[j]) { mask[j] = 1; found++; stack[sp++] = j; }
+        if (j >= 0 && j < n && !mask[j] && ((faint && faint[j]) || (pale && pale[j] && S.Lb[j] > finL + 25))) { mask[j] = 1; found++; stack[sp++] = j; }
     }
   }
   drift = samples ? drift / samples : 0;
@@ -1022,6 +1051,7 @@ function applyMagenta(ed, coat) {
   pushHistory();
   S.mask = base.slice(); S.autoFound = true;
   maskChanged();
+  buildPicks();
 }
 
 // Areas outside the outline that it fully encloses (not connected to the photo's border), up to a few
@@ -1168,7 +1198,7 @@ function snapEdges(core, r = Math.max(4, Math.round(Math.max(S.w, S.h) / 220)), 
 // For each colour the customer picks, the AI paints the cabinets in that real Sherwin-Williams colour.
 // We keep only the cabinets from its picture and correct them to the exact chip; the instant preview
 // shows until it arrives. Renders are cached per colour and capped per photo to keep costs known.
-let MAX_RENDERS = 5;        // photo-real colours per customer (across all their photos, per day); 20 on team devices (see TEAM_HASH)
+let MAX_RENDERS = 15;       // photo-real colours per customer (across all their photos, per day); 30 on team devices (see TEAM_HASH)
 const DWELL_MS = 1500;      // wait this long on a colour before rendering it, so flicking through is free
 let dwellTimer = 0;
 
@@ -1201,7 +1231,7 @@ function requestPaint(c) {
   const known = G.saved.includes(c) || G.pending.has(c.num);
   if (!known) {
     if (!photos.some(st => st.autoFound)) return;
-    if (rendersLeft() <= 0) { updateHint(); return; }
+    if (rendersLeft() <= 0) { if (!G.limitTold) { G.limitTold = true; track("limit_hit", { max: MAX_RENDERS }); } updateHint(); return; }
     G.pending.add(c.num); G.count++; addUsedRender();
   }
   for (const st of photos) paintFor(st, c);
@@ -1217,7 +1247,7 @@ async function paintFor(st, c) {
     // A render that invented doors (glass panes on a solid door) is asked for once more too, and the one that
     // invented less is kept: a second try usually comes back right
     let best = null;
-    for (let attempt = 0; attempt < 2 && !(best && best.invented <= INVENT_MAX); attempt++) {
+    for (let attempt = 0; attempt < 2 && !(best && best.invented <= INVENT_MAX && best.blob <= BLOB_MAX); attempt++) {
       // The first try may already be on its way (started with the find)
       const early = attempt === 0 && st.early && st.early[c.num];
       if (early) delete st.early[c.num];
@@ -1228,13 +1258,15 @@ async function paintFor(st, c) {
       const align = renderAlign(st, cand);
       if (align < ALIGN_MIN) { console.info(`Colour render ${c.num}: edge alignment ${align.toFixed(2)}, asking again`); continue; }
       const out = withState(st, () => correctRender(cand, c));
-      console.info(`Colour render ${c.num}: edge alignment ${align.toFixed(2)}, invented ${(100 * out.invented).toFixed(1)}%`);
-      if (!best || out.invented < best.invented) best = out;
+      console.info(`Colour render ${c.num}: edge alignment ${align.toFixed(2)}, invented ${(100 * out.invented).toFixed(1)}%, biggest patch ${(100 * out.blob).toFixed(1)}%`);
+      if (!best || out.invented + out.blob < best.invented + best.blob) best = out;
     }
     if (!best) throw new Error("colour render didn't line up with the photo");
     st.renders[c.num] = best;
     if (G.pending.has(c.num)) { G.pending.delete(c.num); G.saved.push(c); }
     if (S === st && coloursHere().includes(c)) render();
+    track("render_done", { num: c.num });
+    sharePicture(st, c);
   } catch (e) {
     console.warn("Photo-real render failed:", e); // the instant preview stays
   } finally {
@@ -1473,6 +1505,10 @@ function correctRender(px, c) {
   // "unchanged" doesn't mean skipped. Its own pixel is the paint there; painting it ourselves from the
   // grey coat flattened the door profiles
   const sameFin = Math.hypot((t[0] - fin.L) * 0.5, t[1] - fin.a, t[2] - fin.b) < 12, whiteFin = coatChange(fin) > 18;
+  // A light colour over a dark finish: a window or light reflected in a glossy door is a bright patch in the photo,
+  // and the render's soft smudge there turned grainy and tinted once sharpened. Those pixels get flat paint at
+  // the paint's local brightness, blended in softly (see wF below)
+  const darkFin = t[0] - fin.L > 25;
   let coat = null;
   if (S.coatPainted) { // only solid patches count, single pixels would speckle
     coat = new Float32Array(n);
@@ -1484,7 +1520,7 @@ function correctRender(px, c) {
   // busier than the coat and the photo across about a door panel, it invented one. Patching that spot always
   // showed as a blank blob, worse than the AI's own tidy door, so it's only measured: paintFor asks again instead
   const made = new Uint8Array(n);
-  let invented = 0, inventedPx = 0, cntMk = 0;
+  let invented = 0, inventedPx = 0, cntMk = 0, blob = 0, blobPx = 0;
   {
     const R = Math.max(6, Math.round(Math.max(w, h) / 50)), mk = new Float32Array(n), cL = new Float32Array(n);
     for (let i = 0; i < n; i++) {
@@ -1515,6 +1551,18 @@ function correctRender(px, c) {
     const area = boxBlur(boxBlur(busy, w, h, Math.round(R / 2)).map(v => v > 0.15 ? 1 : 0), w, h, Math.round(R / 3));
     for (let i = 0; i < n; i++) if (mk[i] && area[i] > 0.001) { made[i] = 1; inventedPx++; }
     invented = cntMk ? inventedPx / cntMk : 0;
+    // ...and the biggest single patch (see BLOB_MAX)
+    const lab = new Uint8Array(n), stack = new Int32Array(n);
+    for (let s = 0; s < n; s++) {
+      if (!made[s] || lab[s]) continue;
+      let sp = 0, size = 0; stack[sp++] = s; lab[s] = 1;
+      while (sp) {
+        const i = stack[--sp], x = i % w; size++;
+        for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < n && made[j] && !lab[j]) { lab[j] = 1; stack[sp++] = j; }
+      }
+      if (size > blobPx) blobPx = size;
+    }
+    blob = cntMk ? blobPx / cntMk : 0;
   }
   for (let i = 0; i < n; i++) {
     if (!aiOK[i]) continue;
@@ -1528,6 +1576,11 @@ function correctRender(px, c) {
     // (not right at the outline: a dark line there is the shadow under a countertop or crown, which the render
     // keeps, and painting it ourselves dotted it with white)
     else if (aiBase[i] && rim[i] > 0.999 && sameFin) changed[i] = 1; // (a shadow on the old white is paint too)
+    // A bright reflection on a dark glossy door is already as light as a light colour's paint, so "unchanged"
+    // there doesn't mean skipped either: where the render's pixel sits with the paint around it (its
+    // brightness and tint), it is the paint. Painting it ourselves from the coat left a grey blotch instead.
+    // (dark finishes only: on a cream kitchen it swapped smooth paint for the render's grain)
+    else if (aiBase[i] && rim[i] > 0.999 && darkFin && den[i] > 0.05 && Math.abs(L[i] - num[i] / den[i]) < 8 && Math.hypot(A[i] - mA, B[i] - mB) < 6) changed[i] = 1;
     // (a white finish looks just like the white drywall the find pass sometimes takes along, so there a spot the
     // render left alone stays as it is: the render paints over white reliably)
     else if (aiBase[i] && rim[i] > 0.999 && ((coat && coat[i] > 0.6) || (!whiteFin && finishInside(i, fin)))) { changed[i] = 1; own[i] = 1; }
@@ -1574,7 +1627,7 @@ function correctRender(px, c) {
   for (let i = 0; i < n; i++) shown[i] = changed[i] || own[i] || aiBase[i] || (S.innerNear && S.innerNear[i]) ? 1 : 0;
   const show = boxBlur(shown, w, h, 1);
   // Lightness two ways: the render's (corrected), and our own from the grey coat's shading
-  const ownL = t[0], Lr = new Float32Array(n), Lo = new Float32Array(n), Ld = new Float32Array(n);
+  const ownL = t[0], Lr = new Float32Array(n), Lo = new Float32Array(n), Ld = new Float32Array(n), Lflat = new Float32Array(n);
   // The paint itself: an even final coat (see evenCoat), not on handles or what's behind glass. Its detail
   // (door profiles, lit edges) keeps full strength where the colour is darkened (scaling it with the colour
   // flattened navy and other dark colours), and those edges are sharpened a little and given more definition
@@ -1603,6 +1656,7 @@ function correctRender(px, c) {
     const crisp = coatOK[i] && mD[i] > 0.999 ? (1 - light) * edge[i] * (0.15 * (Ls[i] - sN[i] / sD[i]) + 0.25 * (Ls[i] - mN[i] / mD[i])) : 0;
     Lr[i] = (broad < litK ? litK - (litK - broad) * shade : broad) + fine + crisp;
     Ld[i] = fine + crisp;
+    Lflat[i] = Lr[i] - Ld[i];
     Lo[i] = ownL * Math.pow(Math.min(2.5, Math.max(0.15, S.aiY[i] / S.aiMean)), 0.45);
   }
   // Spots we paint ourselves take on the brightness of the render's paint around them, so they blend in
@@ -1626,9 +1680,10 @@ function correctRender(px, c) {
     // neighbours chopped up the dishes behind the glass. Whatever isn't paint keeps the render's own colours
     // with the same brightness correction as the paint around it, so there's no seam where paint was lifted.
     if (S.inner && S.inner[i]) { own[i] = 0; changed[i] = 0; }
+    const wF = darkFin && changed[i] && !own[i] ? Math.min(1, Math.max(0, (Lb[i] - fin.L - 15) / 20)) : 0;
     const rgb = own[i] ? labToRgb(roll(Lo[i] + offset(i)), t[1], t[2])
       // (a white keeps only half the render's tint wobble: it should read as one clean chip colour)
-      : changed[i] ? labToRgb(rollD(Lr[i], Ld[i]), t[1] + (As[i] - mA) * (1 - 0.5 * light), t[2] + (Bs[i] - mB) * (1 - 0.5 * light))
+      : changed[i] ? labToRgb(rollD(Lr[i], Ld[i]) * (1 - wF) + roll(Lflat[i]) * wF, t[1] + (As[i] - mA) * (1 - 0.5 * light) * (1 - wF), t[2] + (Bs[i] - mB) * (1 - 0.5 * light) * (1 - wF))
       : labToRgb(Math.min(100, Math.max(0, Lr[i])), A[i], B[i]);
     // Alpha: how much of this render shows (0 = the photo's hardware). Pixels that aren't paint are marked
     // 254 rather than 255, so the quick preview of other colours knows to leave them alone
@@ -1640,6 +1695,7 @@ function correctRender(px, c) {
   // Share of the cabinets where the render invented a door (see paintFor). Only judged on light colours: navy over
   // plain white cabinets is busier than the photo and the grey coat everywhere, which read as 20-30% invented
   out.invented = light > 0 ? invented : 0;
+  out.blob = light > 0 ? blob : 0;
   return out;
 }
 
@@ -1751,6 +1807,7 @@ function lookColours() {
 }
 
 function setTwoTone(on) {
+  if (on && !S.two) track("two_tone_on");
   S.two = on;
   if (on) {
     if (!S.look) S.look = [S.color, S.color, S.color];
@@ -2186,6 +2243,7 @@ function setTool(t) {
 }
 $("compare").onclick = () => setCompare(!S.comparing);
 function setCompare(on) {
+  if (on && !S.comparing) track("compare_used");
   S.comparing = on;
   $("compare").setAttribute("aria-pressed", on);
   stage.className = "stage " + (on ? "comparing" : "tool-" + S.tool);
@@ -2240,8 +2298,34 @@ function swatch(c) {
   const s = document.createElement("span"); s.textContent = c.name;
   const e = document.createElement("em"); e.textContent = "SW " + c.num;
   b.append(i, s, e);
-  b.onclick = () => pickColor(c);
+  b.onclick = () => { track("colour_tried", { num: c.num, name: c.name, left: rendersLeft() }); pickColor(c); };
   return b;
+}
+// Three colours picked from the kitchen itself (its counters, floor and walls, not the cabinets): a warm room
+// (oak floor, beige counter, travertine) gets a warm white, a greige and a soft green; a cool or grey room a clean
+// white, a grey and navy. Cabinets already white skip the white. Built once, from the first photo found.
+const PICKS = { warm: ["7008", "7029", "9130"], cool: ["7006", "7016", "6244"], warmWhite: ["7029", "9130", "6244"], coolWhite: ["7016", "6244", "7069"] };
+function buildPicks() {
+  if (G.picked || !S.aiBase) return;
+  const { w, h, aiBase, Lb, Ab, Bb } = S;
+  let sb = 0, cnt = 0;
+  for (let y = Math.round(h * 0.4); y < h; y += 3) for (let x = 0; x < w; x += 3) {
+    const i = y * w + x;
+    if (aiBase[i] || Lb[i] < 25 || Lb[i] > 88) continue;
+    sb += Bb[i]; cnt++;
+  }
+  if (cnt < 200) return;
+  const warm = sb / cnt > 6, fin = finish(aiBase), whiteFin = fin.L > 78 && Math.hypot(fin.a, fin.b) < 10;
+  const nums = PICKS[(warm ? "warm" : "cool") + (whiteFin ? "White" : "")];
+  G.picked = nums;
+  track("picks_shown", { warm, white: whiteFin });
+  const h3 = document.createElement("h3"), g = document.createElement("div");
+  h3.textContent = "Picked for your kitchen"; g.className = "swatches popular picks";
+  nums.forEach(n => BY_NUM[n] && g.append(swatch(BY_NUM[n])));
+  $("popular").prepend(h3, g);
+  // ...and first in the strip under the photo on phones (once each)
+  const q = $("quick");
+  [...nums].reverse().forEach(n => { if (!BY_NUM[n]) return; q.querySelectorAll(`.sw[data-num="${n}"]`).forEach(el => el.remove()); q.prepend(swatch(BY_NUM[n])); });
 }
 function buildPopular() {
   const box = $("popular");
@@ -2330,6 +2414,7 @@ function lookLines() {
   return groups.map(g => ({ c: g.c, text: `${g.parts.join(" & ")} ${name(g.c)}` }));
 }
 $("download").onclick = () => {
+  track("download", { colours: lookLines().length });
   finalCanvas().toBlob(b => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(b);
@@ -2339,6 +2424,47 @@ $("download").onclick = () => {
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }, "image/jpeg", 0.9);
 };
+
+/* ---------- the customer's picture, texted to them ---------- */
+// The first photo-real colour on a visit becomes a before-and-after picture, kept by the Worker for 90 days at
+// a private link and sent to HighLevel, which texts it to the customer (a picture gets forwarded to whoever
+// they decide with). Once per device per day, only for a visitor who gave their details, never from staff
+function beforeAfterCanvas(c) {
+  const k = Math.min(1, 900 / S.h), w2 = Math.round(S.w * k), h2 = Math.round(S.h * k), gap = 12, foot = 64;
+  const keepSel = S.showSel; S.showSel = false; draw([c, c, c]); S.showSel = keepSel;
+  const out = document.createElement("canvas"); out.width = w2 * 2 + gap; out.height = h2 + foot;
+  const x = out.getContext("2d");
+  x.fillStyle = "#fff"; x.fillRect(0, 0, out.width, out.height);
+  x.drawImage(before, 0, 0, w2, h2); x.drawImage(after, w2 + gap, 0, w2, h2);
+  render(); // the stage back to the look being shown
+  const fs = Math.max(18, Math.round(w2 / 26)), font = "Inter, -apple-system, Segoe UI, Roboto, sans-serif";
+  x.font = `700 ${fs}px ${font}`; x.textBaseline = "top";
+  const tag = (t, x0) => { const tw = x.measureText(t).width; x.fillStyle = "rgba(0,0,0,.55)"; x.fillRect(x0 + 12, 12, tw + 20, fs + 14); x.fillStyle = "#fff"; x.fillText(t, x0 + 22, 19); };
+  tag("Before", 0); tag("After", w2 + gap);
+  x.fillStyle = "#09090b"; x.font = `600 ${Math.round(fs * 0.85)}px ${font}`;
+  x.fillText(`SW ${c.num} ${c.name}  ·  ${CONFIG.brand}`, 12, h2 + Math.round(foot * 0.3));
+  return out;
+}
+async function sharePicture(st, c) {
+  if (st !== S || G.sharing || G.shareUrl || isTeam() || !GATE || !savedLead() || !CONFIG.leadWebhook) return;
+  try { if (localStorage.getItem("cv_shared") === new Date().toDateString()) return; } catch (e) {}
+  G.sharing = true;
+  try {
+    const d = await askAI({ mode: "share", image: beforeAfterCanvas(c).toDataURL("image/jpeg", 0.82), photo: st.pad.id });
+    if (!d.url) return;
+    G.shareUrl = d.url;
+    try { localStorage.setItem("cv_shared", new Date().toDateString()); } catch (e) {}
+    const me = savedLead();
+    const body = new URLSearchParams({
+      first_name: me.first_name || "", last_name: me.last_name || "", full_name: [me.first_name, me.last_name].filter(Boolean).join(" "),
+      phone: me.phone || "", email: me.email || "", image_url: d.url, color: `SW ${c.num} ${c.name}`,
+      event: "picture_ready", source: "Cabinet colour visualizer", ...visit()
+    });
+    fetch(CONFIG.leadWebhook, { method: "POST", mode: "no-cors", body, keepalive: true }).catch(() => {});
+    track("picture_shared", { num: c.num });
+  } catch (e) { console.warn("Picture not kept:", e); }
+  finally { G.sharing = false; }
+}
 
 /* ---------- quote request ---------- */
 const dlg = $("quote");
@@ -2360,16 +2486,23 @@ $("quoteBtn").onclick = () => {
   $("quoteFields").hidden = false; $("quoteDone").hidden = true;
   // Prefill from the details they already gave
   const me = savedLead(), f = $("quoteForm").elements;
-  if (me) { f.name.value ||= [me.first_name, me.last_name].filter(Boolean).join(" "); f.phone.value ||= me.phone || ""; f.email.value ||= me.email || ""; }
+  if (me) { f.name.value ||= [me.first_name, me.last_name].filter(Boolean).join(" "); f.phone.value ||= me.phone || ""; f.email.value ||= me.email || ""; f.city.value ||= me.postal_code || ""; }
+  // Details already given: one tap to send (the fields stay behind an Edit button)
+  const quick = !!(me && f.name.value && f.phone.value && f.email.value);
+  $("quoteForm").classList.toggle("quick", quick);
+  if (quick) $("qWho").textContent = `${f.name.value} · ${f.phone.value} · ${f.email.value}`;
+  track("quote_opened", { quick });
   dlg.showModal();
 };
+$("qEdit").onclick = () => $("quoteForm").classList.remove("quick");
 $("quoteForm").addEventListener("submit", async ev => {
   if (ev.submitter && ev.submitter.value !== "send") return;
   ev.preventDefault();
   const fd = new FormData($("quoteForm"));
   const lead = {
     name: fd.get("name"), phone: tidyPhone(fd.get("phone")) || fd.get("phone"), email: fd.get("email"), city: fd.get("city"), notes: fd.get("notes"),
-    color: lookLabel(), color_hex: lookLines().map(l => l.c.hex).join(", "), source: "Cabinet colour visualizer", page: document.referrer || location.href
+    color: lookLabel(), color_hex: lookLines().map(l => l.c.hex).join(", "), source: "Cabinet colour visualizer", page: document.referrer || location.href,
+    image_url: G.shareUrl || "" // their before-and-after picture, if one was kept (see sharePicture)
   };
   if (isTeam()) lead.team = "true"; // sent by our own staff with a customer, not from an ad
   if (fd.get("attach")) {
@@ -2390,6 +2523,7 @@ $("quoteForm").addEventListener("submit", async ev => {
       const names = { first_name: parts[0] || me.first_name || "", last_name: parts.slice(1).join(" ") || me.last_name || "", full_name: lead.name || "", postal_code: me.postal_code || "" };
       await fetch(hook, { method: "POST", mode: "no-cors", body: new URLSearchParams({ ...lead, ...names, photo: "", event: "quote_request", ...visit() }) });
       if (!isTeam()) try { window.fbq && fbq("track", "Contact", { content_name: "Cabinet quote request" }); } catch (e) {}
+      track("quote_sent", { colours: lookLines().length, picture: !!G.shareUrl });
     } else {
       console.warn("Cabinet visualizer: no quoteWebhook set, so this lead was not sent anywhere.", lead);
     }
@@ -2430,7 +2564,10 @@ const visit = (() => {
 const TEAM_HASH = "061a4a74c190a78c3ec5aee57ba33c82da7e7a946db6e9f43562519ed562af5d"; // sha256("cv-team:" + code)
 const teamCode = () => { try { return localStorage.getItem("cv_team") || ""; } catch (e) { return ""; } };
 const isTeam = () => !!teamCode();
-function showTeam() { $("teamTag").hidden = !isTeam(); MAX_RENDERS = isTeam() ? 20 : 5; }
+function showTeam() {
+  $("teamTag").hidden = !isTeam(); MAX_RENDERS = isTeam() ? 30 : 15;
+  try { if (window.posthog && isTeam()) posthog.opt_out_capturing(); } catch (e) {} // staff aren't visitors
+}
 $("teamOff").onclick = () => { try { localStorage.removeItem("cv_team"); } catch (e) {} showTeam(); };
 (async () => {
   const q = new URLSearchParams(location.search), code = q.get("team");
@@ -2490,6 +2627,8 @@ function sendLead(lead) {
   if (isTeam()) return; // never a lead from a team device
   try { localStorage.setItem("cv_lead", JSON.stringify(lead)); } catch (e) {}
   const eventID = "lead-" + newId();
+  track("details_given", { timing: lead.timing, project: !!lead.project });
+  try { if (window.posthog && !isTeam()) posthog.identify(lead.email || lead.phone, { email: lead.email, phone: lead.phone, name: [lead.first_name, lead.last_name].filter(Boolean).join(" "), postal_code: lead.postal_code, timing: lead.timing }); } catch (e) {}
   try { window.fbq && fbq("track", "Lead", { content_name: "Cabinet visualizer" }, { eventID }); } catch (e) {}
   try { parent !== window && parent.postMessage({ type: "cabinet-visualizer:visitor", lead }, "*"); } catch (e) {}
   if (!CONFIG.leadWebhook) { console.warn("Cabinet visualizer: no leadWebhook set, so this lead was not sent anywhere.", lead); return; }
