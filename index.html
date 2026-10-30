@@ -130,6 +130,18 @@ if (/(^|\.)envisionpainting\.ca$|\.github\.io$/.test(location.hostname)) {
     width: 40px; height: 40px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3);
     display: grid; place-items: center; font-size: 16px; line-height: 1; color: var(--ink);
   }
+  /* While the photo-real render is on its way: a card in the middle of the photo, so nobody takes the quick preview
+     for the final result */
+  .hd-card {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; line-height: 1.35;
+    width: min(320px, 82%); padding: 16px 18px; border-radius: var(--radius); background: rgba(9,9,11,.78); color: #fff;
+    box-shadow: 0 8px 30px rgba(0,0,0,.35);
+  }
+  .hd-card b { font-size: 18px; }
+  .hd-card small { font-size: 13px; color: #e4e4e7; }
+  .hd-card .spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid rgba(255,255,255,.3); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .tag {
     position: absolute; top: 10px; padding: 3px 9px; border-radius: 999px; line-height: 1.4;
     background: rgba(0,0,0,.6); color: #fff; font-size: 12px; font-weight: 600; pointer-events: none;
@@ -361,7 +373,7 @@ if (/(^|\.)envisionpainting\.ca$|\.github\.io$/.test(location.hostname)) {
         <canvas id="before"></canvas>
         <canvas id="after"></canvas>
         <div class="cursor" id="cursor" hidden></div>
-        <div class="tag" id="hd" style="left:10px;top:auto;bottom:10px" hidden>✨ Making it photo-real…</div>
+        <div class="hd-card" id="hd" hidden><span class="spin"></span><b>Making it photo-real…</b><small>This is a quick preview. Your real result appears here in about 20 seconds.</small></div>
         <div class="busy" id="busy" hidden><span class="tag" style="position:static;font-size:15px;padding:8px 16px">🔍 Finding your cabinets…</span></div>
         <div class="divider" id="divider" hidden><span>⇔</span></div>
         <div class="tag" id="tagBefore" style="left:10px" hidden>Before</div>
