@@ -43,6 +43,11 @@ const TEAM_LIMITS = { find: 30, parts: 30, paint: 110 };
 const SESSION_MS = 3 * 60 * 60 * 1000;  // a passed bot check is good for 3 hours
 const KEEP_SECONDS = 90 * 24 * 60 * 60; // saved photos and answers delete themselves after 90 days
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
+// When the AI service refuses or fails (a 429 is usually the Google project's monthly spend cap), tell the team:
+// a POST to this HighLevel inbound webhook (workflow "Visualizer Alerts" texts and emails Tristan). At most one
+// alert an hour, remembered in KV, so a bad hour doesn't send fifty texts. "" turns alerts off.
+const ALERT_HOOK = "https://services.leadconnectorhq.com/hooks/LbzVlADbi6RAT1xFcIWN/webhook-trigger/169f4c57-a0b8-4943-92d5-60b85c5557ac"; // same hook as the leads; its workflow has a "Service down" branch
+const ALERT_EVERY = 60 * 60; // seconds
 
 const PROMPT = `Edit this photo for a cabinet-painting preview.
 Repaint ONLY the cabinetry in a flat, solid, fully saturated magenta (#FF00FF): every cabinet door,
@@ -184,11 +189,13 @@ async function callModel(env, jpegB64, aspect, prompt, size) {
   });
 }
 
-async function render(env, jpeg, aspect, prompt, size) {
+async function render(env, jpeg, aspect, prompt, size, ctx) {
   let res = await callModel(env, jpeg, aspect, prompt, size);
   if (res.status === 400 && (aspect || size)) res = await callModel(env, jpeg, null, prompt); // in case imageConfig isn't accepted
   if (!res.ok) {
-    console.log("Gemini error", res.status, (await res.text()).slice(0, 300));
+    const detail = (await res.text()).slice(0, 300);
+    console.log("Gemini error", res.status, detail);
+    alertTeam(env, ctx, res.status, detail);
     return { error: `Detection service error (${res.status})` };
   }
   const data = await res.json();
@@ -199,6 +206,22 @@ async function render(env, jpeg, aspect, prompt, size) {
   }
   const inline = img.inlineData || img.inline_data;
   return { image: `data:${inline.mimeType || inline.mime_type || "image/png"};base64,${inline.data}` };
+}
+
+// Tell the team the AI service is failing (see ALERT_HOOK), once an hour at most
+function alertTeam(env, ctx, status, detail) {
+  if (!ALERT_HOOK || !env.SAVES || !ctx) return;
+  ctx.waitUntil((async () => {
+    if (await env.SAVES.get("alert/last")) return;
+    await env.SAVES.put("alert/last", String(Date.now()), { expirationTtl: ALERT_EVERY });
+    const why = status === 429 ? "429: quota or the Google spend cap (check https://aistudio.google.com/spend)" : `error ${status}`;
+    const body = new URLSearchParams({
+      event: "service_down", status: String(status), detail: detail.replace(/\s+/g, " ").slice(0, 200),
+      message: `Cabinet visualizer: the AI service is failing (${why}). Customers see "busy right now" until it's fixed.`,
+      first_name: "Tristan", last_name: "Hulscher", phone: "+12508821489", email: "tristanhulscher@gmail.com",
+    });
+    await fetch(ALERT_HOOK, { method: "POST", body });
+  })().catch(e => console.log("Alert failed", String(e))));
 }
 
 // Keep a photo or answer (a data URL) for the regression check, after the reply has gone out
@@ -272,7 +295,7 @@ export default {
       return reply({ error: "You've reached today's limit, please try again later" }, 429, origin);
     }
     if (mode === "parts") {
-      const marked = await render(env, jpeg, aspect, PARTS_PROMPT);
+      const marked = await render(env, jpeg, aspect, PARTS_PROMPT, undefined, ctx);
       if (marked.error) return reply({ error: marked.error }, 502, origin);
       keep(env, ctx, photo, "parts", marked.image);
       return reply({ image: marked.image, model: MODEL, seconds: Math.round((Date.now() - t0) / 100) / 10 }, 200, origin);
@@ -282,13 +305,13 @@ export default {
       if (!/^\d{4}$/.test(c.num || "") || !/^[0-9A-Fa-f]{6}$/.test(c.hex || "") || typeof c.name !== "string" || c.name.length > 60) {
         return reply({ error: "Send a Sherwin-Williams colour" }, 400, origin);
       }
-      const painted = await render(env, jpeg, aspect, paintPrompt({ num: c.num, name: c.name.replace(/[^\w\s'-]/g, ""), hex: c.hex }), "2K"); // 2K: sharp enough for a full-screen phone view
+      const painted = await render(env, jpeg, aspect, paintPrompt({ num: c.num, name: c.name.replace(/[^\w\s'-]/g, ""), hex: c.hex }), "2K", ctx); // 2K: sharp enough for a full-screen phone view
       if (painted.error) return reply({ error: painted.error }, 502, origin);
       keep(env, ctx, photo, c.num, painted.image);
       return reply({ image: painted.image, model: MODEL, seconds: Math.round((Date.now() - t0) / 100) / 10 }, 200, origin);
     }
     // Both renders at once: magenta says where the cabinets are, grey says how the paint should look
-    const [found, coat] = await Promise.all([render(env, jpeg, aspect, PROMPT), render(env, jpeg, aspect, GREY_PROMPT)]);
+    const [found, coat] = await Promise.all([render(env, jpeg, aspect, PROMPT, undefined, ctx), render(env, jpeg, aspect, GREY_PROMPT, undefined, ctx)]);
     if (found.error) return reply({ error: found.error }, 502, origin);
     // (the photo as sent: padded to the AI's shape, with the photo's own size to cut the padding off again)
     const size = Array.isArray(body.size) && body.size.length === 2 && body.size.every(v => Number.isInteger(v) && v > 0 && v < 10000) ? body.size : null;
