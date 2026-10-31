@@ -946,6 +946,7 @@ async function autoDetect() {
 function applyMagenta(ed, coat) {
   const { w, h, orig } = S, n = w * h, mask = new Uint8Array(n);
   let drift = 0, samples = 0, found = 0, faint = null, pale = null;
+  const strong = new Uint8Array(n);
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     const r = ed[p], g = ed[p + 1], b = ed[p + 2], hi = Math.max(r, b);
     const magenta = r > g * 1.3 + 8 && b > g * 1.3 + 8 && hi > 30 && Math.abs(r - b) < hi * 0.5;
@@ -963,7 +964,10 @@ function applyMagenta(ed, coat) {
     const cg = coat && Math.max(coat[p], coat[p + 1], coat[p + 2]) - Math.min(coat[p], coat[p + 1], coat[p + 2]) < 22 &&
       (Math.abs(coat[p] - orig[p]) + Math.abs(coat[p + 1] - orig[p + 1]) + Math.abs(coat[p + 2] - orig[p + 2])) / 3 > 12;
     const dull = cg && r > g * 1.15 + 4 && b > g * 1.1 + 4 && Math.abs(r - b) < hi * 0.5 && towardB > 12;
-    if ((magenta && !kept && towardB > Math.max(14, 0.3 * hi) && (hi < 120 || sat > 0.33 || towardB > 90)) || dull) { mask[i] = 1; found++; }
+    if ((magenta && !kept && towardB > Math.max(14, 0.3 * hi) && (hi < 120 || sat > 0.33 || towardB > 90)) || dull) {
+      mask[i] = 1; found++;
+      if (magenta && sat > 0.4 && towardB > 45) strong[i] = 1;
+    }
     else {
       if (i % 7 === 0) { drift += Math.abs(r + g + b - orig[p] - orig[p + 1] - orig[p + 2]) / 3; samples++; }
       // Near-black wood in deep shadow (a crown or stile in a dark corner): the AI's magenta there is faint,
@@ -1001,8 +1005,10 @@ function applyMagenta(ed, coat) {
   if (drift > DRIFT_LIMIT) console.info(`Cabinet detection: edge alignment ${align.toFixed(2)}`);
   if (found < n * 0.01 || align < ALIGN_MIN) { S.detectFailed = true; return; }
   // Cabinets are large connected areas: drop stray specks (reflections in ovens, chrome), and fill
-  // pinholes too small to be a knob
-  keepRegions(mask, 1, n * 0.002);
+  // pinholes too small to be a knob. A small patch the AI painted solid, strong magenta is still cabinet
+  // (a drawer front cut off by a paper towel holder and a cup was dropped as a speck); a reflection
+  // picks up only a weak, patchy pink
+  keepRegions(mask, 1, n * 0.002, r => r.length >= n * 0.0003 && r.reduce((k, i) => k + strong[i], 0) > 0.7 * r.length);
   const before = mask.slice();
   keepRegions(mask, 0, n * 0.00004);
   // Small holes the AI left unpainted inside a cabinet are usually knobs and pulls
@@ -1472,6 +1478,10 @@ function evenCoat(L, A, B, m, w, h) {
 
 // Keep the AI's light and detail; shift its colour so the cabinets average to the chip's hue, and anchor
 // brightness so the best-lit cabinet faces sit near the chip's lightness, both as it looks in this room's light
+// "AI render first": inside the cabinet outline the AI's own render is shown as it is, only shifted as a whole
+// toward the exact chip colour. The per-pixel repainting below left lumps, blotches and smudges on kitchen after
+// kitchen (Oct 31 replay of every saved kitchen); ?mode=live still shows it, to compare
+const RAW_MODE = new URLSearchParams(location.search).get("mode") !== "live";
 function correctRender(px, c) {
   const { w, h, aiOK, aiBase } = S, n = w * h;
   const L = new Float32Array(n), A = new Float32Array(n), B = new Float32Array(n);
@@ -1708,6 +1718,20 @@ function correctRender(px, c) {
   // plain white cabinets is busier than the photo and the grey coat everywhere, which read as 20-30% invented
   out.invented = light > 0 ? invented : 0;
   out.blob = light > 0 ? blob : 0;
+  if (RAW_MODE) {
+    // One shift for the whole render: its median paint colour moved onto the chip (tint fully, lightness half way,
+    // so the room's light and the render's shading stay as the AI drew them)
+    const dL = (t[0] - pL) * 0.5, da = t[1] - mA, db = t[2] - mB, soft = S.aiSoft;
+    for (let i = 0, p = 0; i < n; i++, p += 4) {
+      if (!aiOK[i]) { out[p + 3] = 0; continue; }
+      const glass = S.inner && S.inner[i];
+      const rgb = glass ? [px[p], px[p + 1], px[p + 2]] : labToRgb(Math.min(100, Math.max(0, L[i] + dL)), A[i] + da, B[i] + db);
+      // Knobs and pulls found in the photo keep the photo (the AI sometimes restyles them)
+      const keepPhoto = S.hw && S.hw[i] === 1;
+      const a = keepPhoto ? 0 : glass ? 254 : Math.round(255 * Math.min(1, Math.max(0, soft ? soft[i] : aiBase[i])));
+      out[p] = rgb[0]; out[p + 1] = rgb[1]; out[p + 2] = rgb[2]; out[p + 3] = a;
+    }
+  }
   return out;
 }
 
@@ -1779,7 +1803,7 @@ function findHardware(coat) {
 }
 
 // Flip connected areas of `value` smaller than minSize pixels to the other value
-function keepRegions(mask, value, minSize) {
+function keepRegions(mask, value, minSize, spare) {
   const { w } = S, n = mask.length, seen = new Uint8Array(n), stack = new Int32Array(n), region = [];
   for (let s = 0; s < n; s++) {
     if (seen[s] || mask[s] !== value) continue;
@@ -1791,7 +1815,7 @@ function keepRegions(mask, value, minSize) {
       if (i >= w && !seen[i - w] && mask[i - w] === value) { seen[i - w] = 1; stack[sp++] = i - w; }
       if (i + w < n && !seen[i + w] && mask[i + w] === value) { seen[i + w] = 1; stack[sp++] = i + w; }
     }
-    if (region.length < minSize) for (const i of region) mask[i] = 1 - value;
+    if (region.length < minSize && !(spare && spare(region))) for (const i of region) mask[i] = 1 - value;
   }
 }
 
